@@ -4,6 +4,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { PresenceMapCard } from "../src/card.js";
 import type { Hass, HassEntity } from "../src/types.js";
 
+import { fusedDoc } from "./fused-doc.js";
+
 function state(entity_id: string, value: string, unit = "mm"): HassEntity {
   return {
     entity_id,
@@ -185,5 +187,95 @@ describe("Bermuda trackers", () => {
     const card = mount({ ...config, show_legend: false }, trackerHass());
     expect(card.shadowRoot!.querySelector(".legend")).toBeNull();
     expect(card.shadowRoot!.querySelectorAll(".tracker")).toHaveLength(2);
+  });
+});
+
+describe("Map Fusion shapes", () => {
+  type Push = (doc: unknown) => void;
+
+  function fusionHass(over: Partial<Hass> = {}): { hass: Hass; push: () => Push; calls: unknown[] } {
+    const calls: unknown[] = [];
+    let push: Push = () => undefined;
+    const hass: Hass = {
+      ...makeHass(["0", "1000"]),
+      connection: {
+        subscribeMessage: (cb: Push, msg: unknown) => {
+          calls.push(msg);
+          push = cb;
+          return Promise.resolve(() => undefined);
+        },
+      } as never,
+      ...over,
+    };
+    hass.areas!.kitchen = { area_id: "kitchen", name: "Kitchen" };
+    return { hass, push: () => push, calls };
+  }
+
+  const fusionConfig = {
+    type: "custom:presence-map-card",
+    map_fusion: true,
+    hide_outside_area: true,
+    areas: [{ area: "kitchen", sensors: [{ type: "ld2450", device: "dev1", x: 0.5, y: 0 }] }, { area: "porch" }],
+  };
+
+  it("draws outlines from the pushed map and positions sensors from its box", () => {
+    const { hass, push, calls } = fusionHass();
+    const card = mount(fusionConfig, hass);
+    expect(calls).toEqual([{ type: "map_fusion/subscribe" }]);
+    expect(card.shadowRoot!.textContent).toContain("Loading the Map Fusion map");
+
+    push()(fusedDoc());
+    const root = card.shadowRoot!;
+    const kitchen = root.querySelector('[data-area="kitchen"]')!;
+    expect(kitchen.getAttribute("data-shape")).toBe("map_fusion");
+    expect(kitchen.querySelector("path.area-box")!.getAttribute("d")).toMatch(/^M0.000 0.000 L4.000 0.000/);
+    expect(root.querySelector('[data-area="office"]')).not.toBeNull();
+    expect(root.querySelectorAll(".room-unlinked")).toHaveLength(1);
+    expect(root.querySelector(".notice")!.textContent).toContain("Not on the map yet: Porch");
+
+    // sensor at kitchen rect (0,0) + (0.5,0), target 1 m straight ahead → (0.5, 1): inside the L.
+    const dot = root.querySelector<SVGCircleElement>('[data-target="0-0-0"]')!;
+    expect(dot.style.transform).toBe("translate(0.500px, 1.000px)");
+    expect(dot.classList.contains("hidden")).toBe(false);
+  });
+
+  it("hides targets outside the outline even when inside its box", () => {
+    const { hass, push } = fusionHass();
+    const card = mount(
+      { ...fusionConfig, areas: [{ area: "kitchen", sensors: [{ type: "ld2450", device: "dev1", x: 3, y: 0 }] }] },
+      hass,
+    );
+    push()(fusedDoc());
+    // (3, 0) + (0, 2) = (3, 2): in the kitchen's box but not in the L.
+    card.hass = { ...hass, states: makeHass(["0", "2000"]).states };
+    const dot = card.shadowRoot!.querySelector('[data-target="0-0-0"]')!;
+    expect(dot.classList.contains("hidden")).toBe(true);
+  });
+
+  it("explains when Map Fusion isn't installed", async () => {
+    const hass: Hass = {
+      ...makeHass(["0", "0"]),
+      connection: { subscribeMessage: () => Promise.reject({ code: "unknown_command" }) } as never,
+    };
+    const card = mount({ type: "custom:presence-map-card", map_fusion: true }, hass);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(card.shadowRoot!.textContent).toContain("Map Fusion isn't installed.");
+  });
+
+  it("unsubscribes when removed", async () => {
+    let unsubscribed = 0;
+    const hass: Hass = {
+      ...makeHass(["0", "0"]),
+      connection: { subscribeMessage: () => Promise.resolve(() => unsubscribed++) } as never,
+    };
+    const card = mount({ type: "custom:presence-map-card", map_fusion: true }, hass);
+    card.remove();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(unsubscribed).toBe(1);
+  });
+
+  it("offers Map Fusion in the stub config when it's installed", () => {
+    const hass = { ...makeHass(["0", "0"]), config: { components: ["map_fusion"] } };
+    expect(PresenceMapCard.getStubConfig(hass)).toEqual({ map_fusion: true, areas: [] });
   });
 });

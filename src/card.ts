@@ -5,14 +5,34 @@
  * The SVG skeleton (areas, sensors, one hidden dot per target) is rebuilt
  * only when it would look different. Sensor updates, which can arrive
  * several times a second, just move the dots.
+ *
+ * With `map_fusion` set, area shapes come from the Map Fusion integration
+ * (see mapfusion.ts) and update when it pushes a new map.
  */
 import { DEFAULT_AREA_SIZE, normalizeConfig, type CardConfig } from "./config.js";
 import { escapeHtml } from "./dom.js";
-import { fovPath, insideArea, mapBounds, sensorOrigin, sensorToMap } from "./geometry.js";
+import {
+  extendBounds,
+  fovPath,
+  insideArea,
+  insidePolygons,
+  mapBounds,
+  ringsPath,
+  sensorOrigin,
+  sensorToMap,
+} from "./geometry.js";
+import {
+  FusedMapSubscription,
+  mapFusionInstalled,
+  resolveAreas,
+  type FusedDoc,
+  type MapArea,
+  type ResolvedMap,
+} from "./mapfusion.js";
 import { getDriver } from "./sensors/registry.js";
 import { trackerLocation, trackerName } from "./trackers/bermuda.js";
 import { STYLES } from "./styles.js";
-import type { Hass } from "./types.js";
+import type { Hass, Point } from "./types.js";
 
 const PALETTE = ["#03a9f4", "#ff9800", "#4caf50", "#e91e63", "#9c27b0", "#009688"];
 /** Kept apart from PALETTE so tracker rings don't read as sensor colours. */
@@ -39,6 +59,14 @@ export class PresenceMapCard extends HTMLElement {
   private lastHtml = "";
   private error: string | null = null;
   private labels: LabelBox[] = [];
+  private fused: FusedDoc | null = null;
+  private fusedError: string | null = null;
+  private resolved: ResolvedMap | null = null;
+  private subscription = new FusedMapSubscription((doc, error) => {
+    this.fused = doc;
+    this.fusedError = error;
+    this.render();
+  });
 
   constructor() {
     super();
@@ -50,6 +78,7 @@ export class PresenceMapCard extends HTMLElement {
   }
 
   static getStubConfig(hass?: Hass): Record<string, unknown> {
+    if (mapFusionInstalled(hass)) return { map_fusion: true, areas: [] };
     const first = hass && hass.areas ? Object.keys(hass.areas)[0] : undefined;
     return {
       areas: first ? [{ area: first, x: 0, y: 0, ...DEFAULT_AREA_SIZE, sensors: [] }] : [],
@@ -59,11 +88,13 @@ export class PresenceMapCard extends HTMLElement {
   setConfig(config: unknown): void {
     // Throwing makes Lovelace show its own error card with this message.
     this.config = normalizeConfig(config);
+    this.syncSubscription();
     this.render();
   }
 
   set hass(hass: Hass) {
     this.hassObj = hass;
+    this.syncSubscription();
     this.render();
   }
 
@@ -72,14 +103,35 @@ export class PresenceMapCard extends HTMLElement {
   }
 
   getCardSize(): number {
-    const b = this.config ? mapBounds(this.config.areas) : null;
+    const b = this.config ? this.bounds(this.mapAreas(this.config)) : null;
     if (!b) return 2;
     const ratio = (b.maxY - b.minY) / Math.max(0.1, b.maxX - b.minX);
     return Math.min(12, Math.max(2, Math.round(1 + ratio * 6)));
   }
 
   connectedCallback(): void {
+    this.syncSubscription();
     this.render();
+  }
+
+  disconnectedCallback(): void {
+    this.subscription.stop();
+  }
+
+  private syncSubscription(): void {
+    if (!this.isConnected) return;
+    this.subscription.update(this.hassObj, !!(this.config && this.config.map_fusion));
+  }
+
+  /** The areas to draw, with Map Fusion shapes applied. */
+  private mapAreas(config: CardConfig): ResolvedMap {
+    return resolveAreas(config, this.fused);
+  }
+
+  private bounds(resolved: ResolvedMap) {
+    let b = mapBounds(resolved.areas);
+    for (const rings of resolved.rooms) b = extendBounds(b, rings);
+    return b;
   }
 
   // -- rendering --------------------------------------------------------
@@ -88,7 +140,8 @@ export class PresenceMapCard extends HTMLElement {
     if (!this.config) return;
     let html: string;
     try {
-      html = this.template(this.config);
+      this.resolved = this.mapAreas(this.config);
+      html = this.template(this.config, this.resolved);
       this.error = null;
     } catch (err) {
       this.error = err instanceof Error ? err.message : String(err);
@@ -98,9 +151,9 @@ export class PresenceMapCard extends HTMLElement {
       this.lastHtml = html;
       this.root.innerHTML = html;
     }
-    if (!this.error) {
-      this.updateTargets(this.config);
-      this.updateTrackers(this.config);
+    if (!this.error && this.resolved) {
+      this.updateTargets(this.config, this.resolved.areas);
+      this.updateTrackers(this.config, this.resolved.areas);
     }
   }
 
@@ -110,11 +163,31 @@ export class PresenceMapCard extends HTMLElement {
     return a ? a.name : prettify(id);
   }
 
-  private template(config: CardConfig): string {
+  private emptyText(config: CardConfig): string {
+    if (!config.map_fusion) return "Add an area in the card editor to start the map.";
+    if (this.fusedError) return this.fusedError;
+    if (!this.fused) return "Loading the Map Fusion map…";
+    return "Map Fusion has no rooms to show yet. Link your vacuum's rooms to areas, or place areas in Map Fusion.";
+  }
+
+  /** Problems and areas that aren't on the map, shown under it. */
+  private notices(config: CardConfig, resolved: ResolvedMap): string {
+    const lines: string[] = [];
+    if (this.fusedError) lines.push(this.fusedError);
+    if (resolved.problem) lines.push(resolved.problem);
+    if (resolved.missing.length) {
+      const names = resolved.missing.map((id) => this.areaName(id, (config.areas.find((a) => a.area === id) || {}).name));
+      lines.push(`Not on the map yet: ${names.join(", ")}. Place them in Map Fusion, or give them a box in the card.`);
+    }
+    return lines.map((l) => `<div class="notice">${escapeHtml(l)}</div>`).join("");
+  }
+
+  private template(config: CardConfig, resolved: ResolvedMap): string {
     const header = config.title ? `<div class="header">${escapeHtml(config.title)}</div>` : "";
-    const bounds = mapBounds(config.areas);
+    const bounds = this.bounds(resolved);
     if (!bounds) {
-      return `<style>${STYLES}</style><ha-card>${header}<div class="empty">Add an area in the card editor to start the map.</div></ha-card>`;
+      const notices = this.fusedError ? "" : this.notices(config, resolved);
+      return `<style>${STYLES}</style><ha-card>${header}<div class="empty">${escapeHtml(this.emptyText(config))}</div>${notices}</ha-card>`;
     }
 
     const spanX = bounds.maxX - bounds.minX;
@@ -132,20 +205,26 @@ export class PresenceMapCard extends HTMLElement {
     const dots: string[] = [];
     let sensorIndex = 0;
 
-    config.areas.forEach((area, ai) => {
+    const rooms = resolved.rooms
+      .map((rings) => `<path class="room-unlinked" d="${ringsPath(rings)}"/>`)
+      .join("");
+
+    resolved.areas.forEach((area, ai) => {
       const name = this.areaName(area.area, area.name);
-      defs.push(
-        `<clipPath id="clip-${ai}"><rect x="${f(area.x)}" y="${f(area.y)}" width="${f(area.width)}" height="${f(area.height)}"/></clipPath>`,
-      );
+      const shape = area.polygons
+        ? `<path d="${ringsPath(area.polygons)}"/>`
+        : `<rect x="${f(area.x)}" y="${f(area.y)}" width="${f(area.width)}" height="${f(area.height)}"/>`;
+      defs.push(`<clipPath id="clip-${ai}">${shape}</clipPath>`);
+      const label = labelAt(area, name, font);
       areas.push(
-        `<g class="area" data-area="${escapeHtml(area.area)}"><title>${escapeHtml(name)}</title>` +
-          `<rect class="area-box" x="${f(area.x)}" y="${f(area.y)}" width="${f(area.width)}" height="${f(area.height)}"/>` +
-          `<text class="area-label" data-label="${ai}" x="${f(area.x + font * 0.5)}" y="${f(area.y + font * 1.3)}" font-size="${f(font)}">${escapeHtml(name)}</text>` +
+        `<g class="area" data-area="${escapeHtml(area.area)}" data-shape="${area.shape}"><title>${escapeHtml(name)}</title>` +
+          shape.replace(/^<(path|rect) /, '<$1 class="area-box" ') +
+          `<text class="area-label" data-label="${ai}" x="${f(label.x)}" y="${f(label.y)}" font-size="${f(font)}">${escapeHtml(name)}</text>` +
           `<g class="trackers" data-trackers="${ai}"></g></g>`,
       );
       this.labels.push({
-        x: area.x + font * 0.5,
-        y: area.y + font * 1.3,
+        x: label.x,
+        y: label.y,
         font,
         ring: dotR * 0.75,
         right: area.x + area.width - font * 0.3,
@@ -177,8 +256,8 @@ export class PresenceMapCard extends HTMLElement {
     return (
       `<style>${STYLES}</style><ha-card>${header}<div class="map">` +
       `<svg viewBox="${viewBox}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Presence map">` +
-      `<defs>${defs.join("")}</defs>${areas.join("")}${overlays.join("")}<g class="targets">${dots.join("")}</g>` +
-      `</svg></div>${this.legend(config)}</ha-card>`
+      `<defs>${defs.join("")}</defs>${rooms}${areas.join("")}${overlays.join("")}<g class="targets">${dots.join("")}</g>` +
+      `</svg></div>${this.notices(config, resolved)}${this.legend(config)}</ha-card>`
     );
   }
 
@@ -214,7 +293,7 @@ export class PresenceMapCard extends HTMLElement {
   }
 
   /** Place a hollow ring beside each area's name for every tracker in it. */
-  private updateTrackers(config: CardConfig): void {
+  private updateTrackers(config: CardConfig, mapAreas: MapArea[]): void {
     const hass = this.hassObj;
     if (!hass || !config.trackers.length) return;
     const locations = config.trackers.map((t) => trackerLocation(hass, t));
@@ -225,7 +304,7 @@ export class PresenceMapCard extends HTMLElement {
     });
 
     const f = (n: number) => n.toFixed(3);
-    config.areas.forEach((area, ai) => {
+    mapAreas.forEach((area, ai) => {
       const group = this.root.querySelector(`[data-trackers="${ai}"]`);
       const box = this.labels[ai];
       if (!group || !box) return;
@@ -257,10 +336,10 @@ export class PresenceMapCard extends HTMLElement {
     });
   }
 
-  private updateTargets(config: CardConfig): void {
+  private updateTargets(config: CardConfig, mapAreas: MapArea[]): void {
     const hass = this.hassObj;
     if (!hass) return;
-    config.areas.forEach((area, ai) => {
+    mapAreas.forEach((area, ai) => {
       area.sensors.forEach((sensor, si) => {
         const driver = getDriver(sensor.type);
         if (!driver) return;
@@ -269,7 +348,7 @@ export class PresenceMapCard extends HTMLElement {
           if (!dot) return;
           const local = driver.read(hass, target);
           const p = local ? sensorToMap(area, sensor, local) : null;
-          const visible = !!p && (!config.hide_outside_area || insideArea(area, p));
+          const visible = !!p && (!config.hide_outside_area || inside(area, p));
           if (p && visible) {
             // CSS transform (not the attribute) so moves animate. A dot that
             // was hidden jumps straight to its spot instead of sliding there.
@@ -286,4 +365,20 @@ export class PresenceMapCard extends HTMLElement {
       });
     });
   }
+}
+
+function inside(area: MapArea, p: Point): boolean {
+  return area.polygons ? insidePolygons(area.polygons, p) : insideArea(area, p);
+}
+
+/**
+ * Where an area's label starts (left end, baseline). Boxes: top-left
+ * corner. Outlines: centred on Map Fusion's label point, which is inside
+ * the room even for L shapes, using an estimated text width.
+ */
+function labelAt(area: MapArea, name: string, font: number): Point {
+  if (!area.label) return { x: area.x + font * 0.5, y: area.y + font * 1.3 };
+  const width = name.length * font * 0.55;
+  const x = Math.max(area.x + font * 0.3, Math.min(area.label.x - width / 2, area.x + area.width - width - font * 0.3));
+  return { x, y: area.label.y + font * 0.35 };
 }

@@ -4,6 +4,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { PresenceMapCardEditor } from "../src/editor.js";
 import type { Hass } from "../src/types.js";
 
+import { fusedDoc } from "./fused-doc.js";
+
 interface StubForm extends HTMLElement {
   data?: Record<string, unknown>;
   hass?: Hass;
@@ -245,5 +247,105 @@ describe("tracked devices", () => {
     expect(form(editor, "general").data).toMatchObject({ show_legend: true });
     change(form(editor, "general"), { show_legend: false });
     expect(last()).toEqual({ type: "x", show_legend: false });
+  });
+});
+
+describe("Map Fusion in the editor", () => {
+  function fusionHass(callWS: (msg: Record<string, unknown>) => Promise<unknown>, admin = true): Hass {
+    return { ...hass, config: { components: ["map_fusion"] }, user: { is_admin: admin }, callWS: callWS as never };
+  }
+
+  async function settle() {
+    for (let k = 0; k < 5; k++) await Promise.resolve();
+  }
+
+  function editorWith(config: Record<string, unknown>, h: Hass) {
+    const editor = document.createElement("test-pmc-editor") as PresenceMapCardEditor;
+    const events: Array<Record<string, unknown>> = [];
+    editor.addEventListener("config-changed", (e) => {
+      events.push((e as CustomEvent<{ config: Record<string, unknown> }>).detail.config);
+    });
+    document.body.append(editor);
+    editor.setConfig(config);
+    editor.hass = h;
+    return { editor, last: () => events[events.length - 1]! };
+  }
+
+  const button = (editor: HTMLElement, action: string) =>
+    editor.querySelector<HTMLButtonElement>(`button[data-action="${action}"]`)!;
+
+  it("offers the toggle only when Map Fusion is installed", () => {
+    const { editor } = makeEditor({ type: "custom:presence-map-card" });
+    expect(editor.querySelector('ha-form[data-form="map_fusion"]')).toBeNull();
+    const withMf = editorWith({ type: "custom:presence-map-card" }, fusionHass(() => Promise.resolve(fusedDoc())));
+    expect(withMf.editor.querySelector('ha-form[data-form="map_fusion"]')).not.toBeNull();
+  });
+
+  it("writes map_fusion as true, or an object for non-defaults", async () => {
+    const { editor, last } = editorWith({ type: "custom:presence-map-card" }, fusionHass(() => Promise.resolve(fusedDoc())));
+    const mf = form(editor, "map_fusion") as StubForm & { schema?: Array<{ name: string }> };
+    change(mf, { map_fusion: true });
+    expect(last().map_fusion).toBe(true);
+    await settle();
+    // Two frames in the doc, so the frame picker appears.
+    expect(mf.schema!.map((s) => s.name)).toEqual(["map_fusion", "map_fusion_frame", "map_fusion_all_areas"]);
+    change(mf, { map_fusion_frame: "upstairs" });
+    expect(last().map_fusion).toEqual({ frame: "upstairs" });
+    change(mf, { map_fusion: false });
+    expect(last().map_fusion).toBeUndefined();
+  });
+
+  it("summarises areas by their Map Fusion shape", async () => {
+    const { editor } = editorWith(
+      { type: "custom:presence-map-card", map_fusion: true, areas: [{ area: "kitchen" }, { area: "living" }] },
+      fusionHass(() => Promise.resolve(fusedDoc())),
+    );
+    await settle();
+    const summaries = Array.from(editor.querySelectorAll(".pmc-area > .pmc-header .pmc-summary")).map((e) => e.textContent);
+    expect(summaries).toEqual(["· Kitchen · 4 × 3 m, from the vacuum map", "· Living room · not on the map yet"]);
+    // Vacuum shapes can't be replaced from the card; unplaced areas can be placed.
+    expect(button(editor, "place-area-0").hidden).toBe(true);
+    expect(button(editor, "place-area-1").hidden).toBe(false);
+  });
+
+  it("places an area's box on the Map Fusion map", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const callWS = (msg: Record<string, unknown>) => {
+      calls.push(msg);
+      return Promise.resolve(msg.type === "map_fusion/get" ? fusedDoc() : {});
+    };
+    const { editor } = editorWith(
+      { type: "custom:presence-map-card", map_fusion: true, areas: [{ area: "living", x: 9, y: 0, width: 2, height: 3 }] },
+      fusionHass(callWS),
+    );
+    await settle();
+    button(editor, "place-area-0").click();
+    await settle();
+    expect(calls.find((c) => c.type === "map_fusion/area/set")).toEqual({
+      type: "map_fusion/area/set",
+      frame_id: "vacuum.d10_plus:46",
+      area_id: "living",
+      rect: { x: 9, y: 0, width: 2, height: 3 },
+    });
+    expect(calls.filter((c) => c.type === "map_fusion/get")).toHaveLength(2); // refetched after saving
+    expect(editor.querySelector('[data-status="place-area-0"]')!.textContent).toBe("Saved to Map Fusion (Map 1).");
+  });
+
+  it("hides placing from non-admins", async () => {
+    const { editor } = editorWith(
+      { type: "custom:presence-map-card", map_fusion: true, areas: [{ area: "living" }] },
+      fusionHass(() => Promise.resolve(fusedDoc()), false),
+    );
+    await settle();
+    expect(button(editor, "place-area-0").hidden).toBe(true);
+  });
+
+  it("adds areas without a box when Map Fusion is on", async () => {
+    const { editor, last } = editorWith(
+      { type: "custom:presence-map-card", map_fusion: true, areas: [] },
+      fusionHass(() => Promise.resolve(fusedDoc())),
+    );
+    click(editor, "add-area");
+    expect(last().areas).toEqual([{ area: "living", sensors: [] }]);
   });
 });

@@ -2,7 +2,7 @@
 
 A Home Assistant Lovelace card, distributed through HACS as a **Dashboard/plugin** repository. It draws HA areas as boxes on a floor plan and plots presence-sensor targets on them.
 
-- Areas: chosen HA areas, each a rectangle (`x`, `y`, `width`, `height`, in metres, y pointing down the screen).
+- Areas: chosen HA areas, each a rectangle (`x`, `y`, `width`, `height`, in metres, y pointing down the screen). With `map_fusion` on, shapes (outlines) come from the [Map Fusion](../map-fusion) integration instead, and the card's box is only a fallback.
 - Sensors: children of an area, positioned relative to the area origin, with a `rotation` (clockwise, 0 = facing +y) and `flip_x`.
 - Target map position = area origin + sensor offset + rotated/flipped sensor-frame point.
 - MVP sensor type: HLK-LD2450 via ESPHome. Others (e.g. Bermuda x/y once it trilaterates) come later through the driver seam.
@@ -16,7 +16,8 @@ src/
   card.ts            # <presence-map-card>: static SVG + per-update dot moves
   editor.ts          # <presence-map-card-editor>: visual editor built on ha-form
   config.ts          # config types + normalizeConfig (validation, defaults)
-  geometry.ts        # frame transforms, bounds, FOV wedge path
+  geometry.ts        # frame transforms, bounds, FOV wedge path, point-in-polygon
+  mapfusion.ts       # Map Fusion: document types, resolveAreas, subscription, place/fetch calls
   dom.ts             # escapeHtml, fireEvent, element registration
   types.ts           # minimal Home Assistant structural types
   sensors/
@@ -47,6 +48,7 @@ npm run typecheck  # tsc --noEmit
 - **Units.** Everything inside the card is metres. Drivers convert from the entity's unit.
 - **Render split.** The card rebuilds its SVG only when the structure changes (config, area names, target counts). State updates just move the target dots, because LD2450s update several times a second.
 - **Validation.** `normalizeConfig` throws user-facing errors with a config path (`areas[0].x must be a number`). Half-filled target pairs are skipped, not rejected, so the editor can save mid-edit.
+- **Map Fusion.** `resolveAreas(config, doc)` turns config + fused map into the areas the card draws (`MapArea`). Everything that draws or tests areas uses that list, never `config.areas` directly. The fused document's schema lives in the map-fusion repo (`.agents/fused-map-schema.md`); bump `SUPPORTED_VERSION` with it.
 - **Editor.** Uses HA's `<ha-form>` in the light DOM. Rebuild forms only when the list structure changes, otherwise focus is lost while typing.
 
 ## Adding a sensor type

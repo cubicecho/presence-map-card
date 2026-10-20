@@ -30,11 +30,20 @@ export interface HassEntityEntry {
   area_id?: string | null;
 }
 
+/** The websocket connection (home-assistant-js-websocket). */
+export interface HassConnection {
+  subscribeMessage<T>(callback: (message: T) => void, message: Record<string, unknown>): Promise<() => void>;
+}
+
 export interface Hass {
   states: Record<string, HassEntity>;
   areas?: Record<string, HassArea>;
   devices?: Record<string, HassDevice>;
   entities?: Record<string, HassEntityEntry>;
+  connection?: HassConnection;
+  callWS?<T>(message: Record<string, unknown>): Promise<T>;
+  user?: { is_admin?: boolean } | null;
+  config?: { components?: string[] };
 }
 
 /** A point in metres. */

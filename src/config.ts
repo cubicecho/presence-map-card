@@ -38,6 +38,12 @@ export interface AreaConfig {
   area: string;
   /** Label override; defaults to the area's name. */
   name?: string;
+  /**
+   * True when the config sets any of x, y, width or height. With Map
+   * Fusion on, a box is only drawn from the card's numbers when the user
+   * gave some; otherwise the area waits for Map Fusion to place it.
+   */
+  placed: boolean;
   /** Origin of the box on the map. */
   x: number;
   y: number;
@@ -64,6 +70,14 @@ export interface TrackerConfig {
 
 export const TRACKER_TYPES = ["bermuda"];
 
+/** Room shapes from the Map Fusion integration. */
+export interface MapFusionConfig {
+  /** Which map (frame id) to show; defaults to the first. */
+  frame?: string;
+  /** Also draw Map Fusion areas the card doesn't list (default true). */
+  all_areas: boolean;
+}
+
 export interface CardConfig {
   type: string;
   title?: string;
@@ -73,6 +87,8 @@ export interface CardConfig {
   show_fov: boolean;
   /** Show the tracker legend under the map. */
   show_legend: boolean;
+  /** Set when room shapes come from Map Fusion. */
+  map_fusion?: MapFusionConfig;
   areas: AreaConfig[];
   trackers: TrackerConfig[];
 }
@@ -131,9 +147,11 @@ function normalizeArea(raw: unknown, path: string): AreaConfig {
   const height = num(a.height, DEFAULT_AREA_SIZE.height, `${path}.height`);
   if (width <= 0 || height <= 0) throw new Error(`${path} width and height must be above 0`);
   const sensors = Array.isArray(a.sensors) ? a.sensors : [];
+  const placed = ["x", "y", "width", "height"].some((k) => a[k] !== undefined && a[k] !== null && a[k] !== "");
   return {
     area,
     name: str(a.name),
+    placed,
     x: num(a.x, 0, `${path}.x`),
     y: num(a.y, 0, `${path}.y`),
     width,
@@ -152,6 +170,16 @@ function normalizeTracker(raw: unknown, path: string): TrackerConfig {
   return { type, device: str(t.device), entity: str(t.entity), name: str(t.name), color: str(t.color) };
 }
 
+function normalizeMapFusion(raw: unknown): MapFusionConfig | undefined {
+  if (raw === undefined || raw === null || raw === false) return undefined;
+  if (raw === true) return { all_areas: true };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("map_fusion must be true or an object like { frame: ... }");
+  }
+  const m = raw as Record<string, unknown>;
+  return { frame: str(m.frame), all_areas: m.all_areas !== false };
+}
+
 export function normalizeConfig(raw: unknown): CardConfig {
   if (!raw || typeof raw !== "object") throw new Error("Invalid configuration");
   const c = raw as Record<string, unknown>;
@@ -165,6 +193,7 @@ export function normalizeConfig(raw: unknown): CardConfig {
     hide_outside_area: c.hide_outside_area !== false,
     show_fov: c.show_fov !== false,
     show_legend: c.show_legend !== false,
+    map_fusion: normalizeMapFusion(c.map_fusion),
     areas: areas.map((a, i) => normalizeArea(a, `areas[${i}]`)),
     trackers: trackers.map((t, i) => normalizeTracker(t, `trackers[${i}]`)),
   };

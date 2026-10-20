@@ -15,6 +15,13 @@ svg { display: block; width: 100%; height: auto; max-height: 70vh; }
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
+.room-unlinked {
+  fill: none;
+  stroke: var(--divider-color, rgba(127,127,127,0.5));
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
 .area-label {
   fill: var(--secondary-text-color, #727272);
   font-family: var(--paper-font-body1_-_font-family, sans-serif);
@@ -35,6 +42,7 @@ svg { display: block; width: 100%; height: auto; max-height: 70vh; }
 .swatch circle { fill: none; stroke-width: 2; }
 .legend-name { color: var(--primary-text-color); }
 .legend-area { color: var(--secondary-text-color); }
+.notice { padding: 0 16px 12px; font-size: 0.85em; color: var(--secondary-text-color); }
 .empty, .error { padding: 16px; color: var(--secondary-text-color); }
 .error { color: var(--error-color, #db4437); }
 `;

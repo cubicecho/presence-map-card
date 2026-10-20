@@ -4,7 +4,7 @@ import type { AreaConfig, SensorConfig } from "../src/config.js";
 import { fovPath, insideArea, mapBounds, sensorOrigin, sensorToMap } from "../src/geometry.js";
 
 function area(over: Partial<AreaConfig> = {}): AreaConfig {
-  return { area: "a", x: 0, y: 0, width: 4, height: 3, sensors: [], ...over };
+  return { area: "a", placed: true, x: 0, y: 0, width: 4, height: 3, sensors: [], ...over };
 }
 
 function sensor(over: Partial<SensorConfig> = {}): SensorConfig {

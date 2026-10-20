@@ -7,6 +7,7 @@ A Home Assistant Lovelace card that draws your areas as boxes on a floor plan an
 - Pick the Home Assistant **areas** to show and place each one as a box (origin and size).
 - Add **presence sensors** to an area at a position and rotation inside it.
 - Each detected target is drawn as a dot at **area origin + sensor offset + the target's position (rotated to match the sensor)**.
+- Or take the room shapes from **[Map Fusion](https://github.com/cubicecho/map_fusion_ha_integration)**, which traces them from your robot vacuum's map (see [Room shapes from Map Fusion](#room-shapes-from-map-fusion)).
 - Optionally list **tracked devices** from [Bermuda BLE Trilateration](https://github.com/agittins/bermuda). Each one shows as a hollow dot beside the name of the area it is in, with a legend under the map.
 
 Only the **HLK-LD2450** mmWave radar (via ESPHome) is supported for x/y targets for now. Bermuda is supported at area level (which room, not where in it). Other sensor types can be added later (see [Roadmap](#roadmap)).
@@ -87,6 +88,7 @@ areas:
 | `hide_outside_area` | boolean | `true` | Hide targets that fall outside their sensor's area (ghost readings through walls) |
 | `show_fov` | boolean | `true` | Draw each sensor's field-of-view wedge |
 | `show_legend` | boolean | `true` | Show the tracked-device legend under the map (only when `trackers` is set) |
+| `map_fusion` | `true` or object | off | Take area shapes from Map Fusion (see [below](#room-shapes-from-map-fusion)) |
 | `areas` | list | `[]` | Areas to draw (see below) |
 | `trackers` | list | `[]` | Devices tracked at area level, e.g. Bermuda (see [Tracked devices](#tracked-devices-bermuda)) |
 
@@ -96,8 +98,8 @@ areas:
 | --- | --- | --- | --- |
 | `area` | string | **required** | Home Assistant area id |
 | `name` | string | area name | Label override |
-| `x`, `y` | number (m) | `0` | Box origin (top-left corner) on the map |
-| `width`, `height` | number (m) | `4`, `3` | Box extent; must be above 0 |
+| `x`, `y` | number (m) | `0` | Box origin (top-left corner) on the map. With `map_fusion`, only used when Map Fusion has no shape for the area |
+| `width`, `height` | number (m) | `4`, `3` | Box extent; must be above 0. Same fallback rule as `x`, `y` |
 | `sensors` | list | `[]` | Sensors in this area |
 
 ### Sensor
@@ -121,6 +123,35 @@ areas:
 | `y` | entity id | Entity reporting the target's distance from the sensor |
 
 A target with only one of `x`/`y` set is ignored.
+
+## Room shapes from Map Fusion
+
+[Map Fusion](https://github.com/cubicecho/map_fusion_ha_integration) is a Home Assistant integration that turns robot vacuum maps (Dreame for now) into one map per floor, with each room linked to an HA area. With it, you don't measure rooms by hand: the card draws each room's real outline.
+
+```yaml
+type: custom:presence-map-card
+map_fusion: true
+areas:
+  - area: office            # no x/y/width/height: the shape comes from Map Fusion
+    sensors:
+      - type: ld2450
+        device: 0123456789abcdef0123456789abcdef
+        x: 2.2              # still measured from the area's top-left corner
+        y: 0
+```
+
+- Every room on the Map Fusion map is drawn. List an area under `areas` only to add sensors or a label.
+- An area's top-left corner is the top-left of its outline's bounding box, so sensors are placed the same way as before.
+- `hide_outside_area` checks the real outline (with 10 cm of slack for the gaps vacuums leave at walls and doors), not the box.
+- Vacuum rooms not linked to an area are drawn dashed.
+- Areas Map Fusion hasn't placed use the card's `x`/`y`/`width`/`height` if you gave them, or are listed under the map as "Not on the map yet". In the editor, **Place on Map Fusion map** saves the card's box to Map Fusion (admins only), so every card and integration uses the same shape.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `map_fusion.frame` | string | first map | Which Map Fusion map to show (a floor id, or `vacuum.<name>:<map id>` when your areas have no floors) |
+| `map_fusion.all_areas` | boolean | `true` | Draw every Map Fusion room. `false` draws only the areas listed in the card |
+
+`map_fusion: true` is the same as `map_fusion: {}`.
 
 ## Coordinate system
 
@@ -188,7 +219,7 @@ The card reads Bermuda's `sensor.<device>_area` entity. It uses the entity's `ar
 ## Roadmap
 
 - More sensor types that report an x/y position. When Bermuda gains real trilateration (x/y), that would become a sensor driver, separate from today's area-level `trackers`. Sensor types are pluggable: each implements the `SensorDriver` interface in [`src/sensors/driver.ts`](src/sensors/driver.ts) and is listed in [`src/sensors/registry.ts`](src/sensors/registry.ts). The map code handles placing whatever points a driver returns.
-- Non-rectangular areas.
+- Non-rectangular areas without Map Fusion (drawing outlines in the editor).
 
 ## Development
 

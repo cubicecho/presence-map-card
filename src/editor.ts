@@ -9,9 +9,14 @@
  * defaults the user never chose. The DOM is rebuilt only when areas,
  * sensors or trackers are added or removed; otherwise each form's data is updated in
  * place, so typing doesn't lose focus.
+ *
+ * With Map Fusion on, the editor fetches the fused map to offer its frames,
+ * show which areas already have a shape, and save an area's box to Map
+ * Fusion ("Place on Map Fusion map").
  */
 import { DEFAULT_AREA_SIZE } from "./config.js";
 import { fireEvent } from "./dom.js";
+import { fetchFusedMap, mapFusionInstalled, pickFrame, placeArea, type FusedDoc, type FusedFrame } from "./mapfusion.js";
 import { getDriver } from "./sensors/registry.js";
 import { discoverBermudaAreaEntity, trackerLocation, trackerName } from "./trackers/bermuda.js";
 import type { Hass } from "./types.js";
@@ -43,6 +48,20 @@ const GENERAL_SCHEMA: FormSchemaItem[] = [
   { name: "show_fov", selector: { boolean: {} } },
   { name: "show_legend", selector: { boolean: {} } },
 ];
+
+/** Shown when Map Fusion is installed or already configured. */
+function mapFusionSchema(enabled: boolean, frames: FusedFrame[]): FormSchemaItem[] {
+  const out: FormSchemaItem[] = [{ name: "map_fusion", selector: { boolean: {} } }];
+  if (!enabled) return out;
+  if (frames.length > 1) {
+    out.push({
+      name: "map_fusion_frame",
+      selector: { select: { mode: "dropdown", options: frames.map((f) => ({ value: f.frame_id, label: f.name })) } },
+    });
+  }
+  out.push({ name: "map_fusion_all_areas", selector: { boolean: {} } });
+  return out;
+}
 
 const TRACKER_SCHEMA: FormSchemaItem[] = [
   { name: "device", selector: { device: { filter: { integration: "bermuda" } } } },
@@ -93,6 +112,9 @@ const LABELS: Record<string, string> = {
   hide_outside_area: "Hide targets outside their area",
   show_fov: "Show sensor field of view",
   show_legend: "Show tracked-device legend",
+  map_fusion: "Use room shapes from Map Fusion",
+  map_fusion_frame: "Map Fusion map",
+  map_fusion_all_areas: "Show every Map Fusion room, not only the areas below",
   area: "Area",
   name: "Label (optional)",
   x: "X position",
@@ -125,6 +147,8 @@ details[open] > .pmc-header::before { transform: rotate(90deg); }
 .pmc-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pmc-summary { font-weight: 400; color: var(--secondary-text-color); }
 .pmc-button { cursor: pointer; border: 1px solid var(--primary-color, #03a9f4); color: var(--primary-color, #03a9f4); background: transparent; border-radius: 6px; padding: 6px 12px; font: inherit; }
+.pmc-status { color: var(--secondary-text-color); font-size: 0.9em; }
+.pmc-button[hidden], .pmc-status:empty { display: none; }
 .pmc-button.pmc-remove { border-color: var(--error-color, #db4437); color: var(--error-color, #db4437); padding: 2px 8px; }
 `;
 
@@ -162,7 +186,12 @@ function applyChanges(target: Raw, before: Raw, after: Raw, skip?: (key: string)
 interface BoundForm {
   el: HaFormElement;
   data: () => Raw;
+  /** For forms whose fields change without a rebuild. */
+  schema?: () => FormSchemaItem[];
 }
+
+/** Things refreshed in place on every update (button visibility, status). */
+type Refresher = () => void;
 
 export class PresenceMapCardEditor extends HTMLElement {
   private config: Raw = { type: "custom:presence-map-card" };
@@ -173,6 +202,12 @@ export class PresenceMapCardEditor extends HTMLElement {
   private summaries: Array<{ el: HTMLElement; text: () => string }> = [];
   /** Which sections are expanded: "area-i" and "sensor-i-j". */
   private open = new Set<string>();
+  private refreshers: Refresher[] = [];
+  /** The fused map, fetched once Map Fusion is turned on. */
+  private fused: FusedDoc | null = null;
+  private fusedFetch: Promise<void> | null = null;
+  /** Result of the last "Place on Map Fusion map", by area index. */
+  private placeStatus: Record<number, string> = {};
 
   setConfig(config: Raw): void {
     this.config = clone(config || {});
@@ -220,6 +255,7 @@ export class PresenceMapCardEditor extends HTMLElement {
 
   private render(): void {
     if (!this.hassObj) return;
+    this.ensureFused();
     const key = this.currentKey();
     if (key !== this.structureKey) {
       this.structureKey = key;
@@ -231,14 +267,118 @@ export class PresenceMapCardEditor extends HTMLElement {
   private update(): void {
     for (const f of this.forms) {
       f.el.hass = this.hassObj;
+      if (f.schema) f.el.schema = f.schema();
       f.el.data = f.data();
     }
     for (const s of this.summaries) s.el.textContent = s.text();
+    for (const r of this.refreshers) r();
+  }
+
+  // -- Map Fusion ---------------------------------------------------------
+
+  private mapFusionOn(): boolean {
+    return !!this.config.map_fusion;
+  }
+
+  private mapFusionFrame(): FusedFrame | null {
+    const mf = this.config.map_fusion;
+    const id = mf && typeof mf === "object" ? (mf as Raw).frame : undefined;
+    return pickFrame(this.fused, typeof id === "string" && id ? id : undefined);
+  }
+
+  private ensureFused(force = false): void {
+    const hass = this.hassObj;
+    if (!hass || !this.mapFusionOn() || (this.fusedFetch && !force)) return;
+    this.fusedFetch = fetchFusedMap(hass)
+      .then((doc) => {
+        this.fused = doc;
+      })
+      .catch(() => {
+        this.fused = null; // the card itself explains what's wrong
+      })
+      .then(() => this.update());
+  }
+
+  private mapFusionData(): Raw {
+    const mf = this.config.map_fusion;
+    const obj = mf && typeof mf === "object" ? (mf as Raw) : {};
+    return {
+      map_fusion: !!mf,
+      map_fusion_frame: obj.frame,
+      map_fusion_all_areas: obj.all_areas !== false,
+    };
+  }
+
+  private changeMapFusion(after: Raw): void {
+    if (!after.map_fusion) {
+      delete this.config.map_fusion;
+      return;
+    }
+    const obj: Raw = {};
+    if (typeof after.map_fusion_frame === "string" && after.map_fusion_frame) obj.frame = after.map_fusion_frame;
+    if (after.map_fusion_all_areas === false) obj.all_areas = false;
+    // Plain `true` unless something non-default is set.
+    this.config.map_fusion = Object.keys(obj).length ? obj : true;
+    this.ensureFused();
+  }
+
+  /** The area's shape in the shown Map Fusion map, if any. */
+  private fusedArea(i: number) {
+    const frame = this.mapFusionFrame();
+    const a = list(this.config.areas)[i];
+    const id = a && typeof a.area === "string" ? a.area : "";
+    return frame && id ? frame.areas.find((x) => x.area_id === id) : undefined;
+  }
+
+  /** Save this area's card box to Map Fusion as a hand placement. */
+  private placeOnMap(i: number): void {
+    const hass = this.hassObj;
+    const frame = this.mapFusionFrame();
+    const a = list(this.config.areas)[i];
+    if (!hass || !frame || !a || typeof a.area !== "string" || !a.area) return;
+    const rect = {
+      x: Number(a.x) || 0,
+      y: Number(a.y) || 0,
+      width: Number(a.width) || DEFAULT_AREA_SIZE.width,
+      height: Number(a.height) || DEFAULT_AREA_SIZE.height,
+    };
+    this.placeStatus[i] = "Saving…";
+    this.update();
+    placeArea(hass, frame.frame_id, a.area, rect)
+      .then(() => {
+        this.placeStatus[i] = `Saved to Map Fusion (${frame.name}).`;
+        this.ensureFused(true);
+      })
+      .catch((err: { message?: string }) => {
+        this.placeStatus[i] = `Couldn't save: ${(err && err.message) || String(err)}`;
+        this.update();
+      });
+  }
+
+  /** Button + status line under an area, shown when placing makes sense. */
+  private placeControls(i: number): HTMLElement[] {
+    const button = this.button("Place on Map Fusion map", `place-area-${i}`, () => this.placeOnMap(i));
+    const status = document.createElement("div");
+    status.className = "pmc-status";
+    status.dataset.status = `place-area-${i}`;
+    this.refreshers.push(() => {
+      const a = list(this.config.areas)[i] || {};
+      const admin = !!(this.hassObj && this.hassObj.user && this.hassObj.user.is_admin);
+      const fused = this.fusedArea(i);
+      const show = this.mapFusionOn() && admin && !!this.mapFusionFrame() && !!a.area && (!fused || fused.origin === "manual");
+      button.hidden = !show;
+      button.textContent = fused ? "Update Map Fusion shape from this box" : "Place on Map Fusion map";
+      const text = this.placeStatus[i] || "";
+      if (status.textContent !== text) status.textContent = text;
+    });
+    return [button, status];
   }
 
   private build(): void {
     this.forms = [];
     this.summaries = [];
+    this.refreshers = [];
+    this.placeStatus = {};
     this.innerHTML = "";
 
     const style = document.createElement("style");
@@ -254,6 +394,12 @@ export class PresenceMapCardEditor extends HTMLElement {
         applyChanges(this.config, before, after);
       }),
     );
+    if (this.mapFusionOn() || mapFusionInstalled(this.hassObj)) {
+      const mf = this.form("map_fusion", [], () => this.mapFusionData(), (_before, after) => this.changeMapFusion(after));
+      this.forms[this.forms.length - 1]!.schema = () =>
+        mapFusionSchema(this.mapFusionOn(), this.fused ? this.fused.frames : []);
+      root.append(mf);
+    }
 
     list(this.config.areas).forEach((_, i) => root.append(this.areaSection(i)));
 
@@ -370,6 +516,7 @@ export class PresenceMapCardEditor extends HTMLElement {
     const area = list(this.config.areas)[i];
     list(area && area.sensors).forEach((_, j) => body.append(this.sensorSection(i, j)));
 
+    for (const el of this.placeControls(i)) body.append(el);
     body.append(this.button("Add LD2450 sensor", `add-sensor-${i}`, () => this.addSensor(i)));
     return section;
   }
@@ -461,6 +608,15 @@ export class PresenceMapCardEditor extends HTMLElement {
     const id = typeof a.area === "string" ? a.area : "";
     const ha = id && this.hassObj && this.hassObj.areas ? this.hassObj.areas[id] : undefined;
     const name = (typeof a.name === "string" && a.name) || (ha && ha.name) || id || "No area picked";
+    if (this.mapFusionOn()) {
+      const fused = this.fusedArea(i);
+      if (fused) {
+        const how = fused.origin === "manual" ? "placed in Map Fusion" : "from the vacuum map";
+        return `· ${name} · ${fmt(fused.rect.width)} × ${fmt(fused.rect.height)} m, ${how}`;
+      }
+      const placed = ["x", "y", "width", "height"].some((k) => !isEmpty(a[k]));
+      if (!placed) return `· ${name} · not on the map yet`;
+    }
     const w = Number(a.width) || DEFAULT_AREA_SIZE.width;
     const h = Number(a.height) || DEFAULT_AREA_SIZE.height;
     return `· ${name} · ${fmt(w)} × ${fmt(h)} m at (${fmt(Number(a.x) || 0)}, ${fmt(Number(a.y) || 0)})`;
@@ -602,6 +758,13 @@ export class PresenceMapCardEditor extends HTMLElement {
         break;
       }
     }
+    if (this.mapFusionOn()) {
+      // Map Fusion supplies the shape; a box can still be added by hand.
+      areas.push({ area: id, sensors: [] });
+      this.open.add(`area-${areas.length - 1}`);
+      this.commit();
+      return;
+    }
     let x = 0;
     for (const a of areas) {
       const right = (Number(a.x) || 0) + (Number(a.width) || DEFAULT_AREA_SIZE.width);
@@ -622,7 +785,8 @@ export class PresenceMapCardEditor extends HTMLElement {
   private addSensor(i: number): void {
     const area = this.areas()[i];
     if (!area) return;
-    const width = Number(area.width) || DEFAULT_AREA_SIZE.width;
+    const fused = this.mapFusionOn() ? this.fusedArea(i) : undefined;
+    const width = fused ? fused.rect.width : Number(area.width) || DEFAULT_AREA_SIZE.width;
     // Default: middle of the top wall, facing into the room.
     const sensors = this.sensors(area);
     sensors.push({ type: "ld2450", x: width / 2, y: 0, rotation: 0 });
