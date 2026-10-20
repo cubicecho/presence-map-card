@@ -120,7 +120,8 @@ export class PresenceMapCard extends HTMLElement {
 
   private syncSubscription(): void {
     if (!this.isConnected) return;
-    this.subscription.update(this.hassObj, !!(this.config && this.config.map_fusion));
+    const mf = this.config && this.config.map_fusion;
+    this.subscription.update(this.hassObj, !!mf, mf ? mf.variant : "traced");
   }
 
   /** The areas to draw, with Map Fusion shapes applied. */

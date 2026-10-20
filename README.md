@@ -150,6 +150,7 @@ areas:
 | --- | --- | --- | --- |
 | `map_fusion.frame` | string | first map | Which Map Fusion map to show (a floor id, or `vacuum.<name>:<map id>` when your areas have no floors) |
 | `map_fusion.all_areas` | boolean | `true` | Draw every Map Fusion room. `false` draws only the areas listed in the card |
+| `map_fusion.variant` | `traced` or `filled` | `traced` | `filled` draws rooms with furniture gaps filled in (under beds, wardrobes, islands), closer to the real walls. Needs Map Fusion 0.2+ |
 
 `map_fusion: true` is the same as `map_fusion: {}`.
 

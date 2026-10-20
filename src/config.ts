@@ -76,6 +76,8 @@ export interface MapFusionConfig {
   frame?: string;
   /** Also draw Map Fusion areas the card doesn't list (default true). */
   all_areas: boolean;
+  /** "traced" (what the vacuum mapped) or "filled" (furniture gaps filled in). */
+  variant: "traced" | "filled";
 }
 
 export interface CardConfig {
@@ -172,12 +174,16 @@ function normalizeTracker(raw: unknown, path: string): TrackerConfig {
 
 function normalizeMapFusion(raw: unknown): MapFusionConfig | undefined {
   if (raw === undefined || raw === null || raw === false) return undefined;
-  if (raw === true) return { all_areas: true };
+  if (raw === true) return { all_areas: true, variant: "traced" };
   if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("map_fusion must be true or an object like { frame: ... }");
   }
   const m = raw as Record<string, unknown>;
-  return { frame: str(m.frame), all_areas: m.all_areas !== false };
+  const variant = str(m.variant) || "traced";
+  if (variant !== "traced" && variant !== "filled") {
+    throw new Error(`map_fusion.variant must be "traced" or "filled" (got ${JSON.stringify(m.variant)})`);
+  }
+  return { frame: str(m.frame), all_areas: m.all_areas !== false, variant };
 }
 
 export function normalizeConfig(raw: unknown): CardConfig {

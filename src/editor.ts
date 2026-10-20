@@ -60,6 +60,7 @@ function mapFusionSchema(enabled: boolean, frames: FusedFrame[]): FormSchemaItem
     });
   }
   out.push({ name: "map_fusion_all_areas", selector: { boolean: {} } });
+  out.push({ name: "map_fusion_filled", selector: { boolean: {} } });
   return out;
 }
 
@@ -115,6 +116,7 @@ const LABELS: Record<string, string> = {
   map_fusion: "Use room shapes from Map Fusion",
   map_fusion_frame: "Map Fusion map",
   map_fusion_all_areas: "Show every Map Fusion room, not only the areas below",
+  map_fusion_filled: "Fill in furniture gaps (rooms closer to their real walls)",
   area: "Area",
   name: "Label (optional)",
   x: "X position",
@@ -306,6 +308,7 @@ export class PresenceMapCardEditor extends HTMLElement {
       map_fusion: !!mf,
       map_fusion_frame: obj.frame,
       map_fusion_all_areas: obj.all_areas !== false,
+      map_fusion_filled: obj.variant === "filled",
     };
   }
 
@@ -317,6 +320,7 @@ export class PresenceMapCardEditor extends HTMLElement {
     const obj: Raw = {};
     if (typeof after.map_fusion_frame === "string" && after.map_fusion_frame) obj.frame = after.map_fusion_frame;
     if (after.map_fusion_all_areas === false) obj.all_areas = false;
+    if (after.map_fusion_filled === true) obj.variant = "filled";
     // Plain `true` unless something non-default is set.
     this.config.map_fusion = Object.keys(obj).length ? obj : true;
     this.ensureFused();

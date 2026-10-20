@@ -288,9 +288,16 @@ describe("Map Fusion in the editor", () => {
     expect(last().map_fusion).toBe(true);
     await settle();
     // Two frames in the doc, so the frame picker appears.
-    expect(mf.schema!.map((s) => s.name)).toEqual(["map_fusion", "map_fusion_frame", "map_fusion_all_areas"]);
+    expect(mf.schema!.map((s) => s.name)).toEqual([
+      "map_fusion",
+      "map_fusion_frame",
+      "map_fusion_all_areas",
+      "map_fusion_filled",
+    ]);
     change(mf, { map_fusion_frame: "upstairs" });
     expect(last().map_fusion).toEqual({ frame: "upstairs" });
+    change(mf, { map_fusion_filled: true });
+    expect(last().map_fusion).toEqual({ frame: "upstairs", variant: "filled" });
     change(mf, { map_fusion: false });
     expect(last().map_fusion).toBeUndefined();
   });

@@ -182,17 +182,22 @@ function errorText(err: unknown): string {
 export class FusedMapSubscription {
   private unsubscribe: Promise<(() => void) | void> | null = null;
   private connection: HassConnection | null = null;
+  private variant = "traced";
 
   constructor(private readonly onChange: (doc: FusedDoc | null, error: string | null) => void) {}
 
-  update(hass: Hass | undefined, enabled: boolean): void {
+  update(hass: Hass | undefined, enabled: boolean, variant = "traced"): void {
     const connection = enabled && hass && hass.connection ? hass.connection : null;
-    if (connection === this.connection) return;
+    if (connection === this.connection && variant === this.variant) return;
     this.stop();
+    this.variant = variant;
     if (!connection) return;
     this.connection = connection;
+    // Older Map Fusion versions don't know `variant`; only send it when needed.
+    const message: Record<string, unknown> = { type: "map_fusion/subscribe" };
+    if (variant !== "traced") message.variant = variant;
     this.unsubscribe = connection
-      .subscribeMessage<FusedDoc | null>((doc) => this.onChange(doc, null), { type: "map_fusion/subscribe" })
+      .subscribeMessage<FusedDoc | null>((doc) => this.onChange(doc, null), message)
       .catch((err: unknown) => {
         if (this.connection === connection) this.onChange(null, errorText(err));
       });

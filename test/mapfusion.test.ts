@@ -11,12 +11,15 @@ describe("map_fusion config", () => {
   it("accepts true or an object", () => {
     expect(normalizeConfig({}).map_fusion).toBeUndefined();
     expect(normalizeConfig({ map_fusion: false }).map_fusion).toBeUndefined();
-    expect(normalizeConfig({ map_fusion: true }).map_fusion).toEqual({ all_areas: true });
+    expect(normalizeConfig({ map_fusion: true }).map_fusion).toEqual({ all_areas: true, variant: "traced" });
     expect(normalizeConfig({ map_fusion: { frame: "upstairs", all_areas: false } }).map_fusion).toEqual({
       frame: "upstairs",
       all_areas: false,
+      variant: "traced",
     });
+    expect(normalizeConfig({ map_fusion: { variant: "filled" } }).map_fusion!.variant).toBe("filled");
     expect(() => normalizeConfig({ map_fusion: "yes" })).toThrow(/map_fusion/);
+    expect(() => normalizeConfig({ map_fusion: { variant: "fluffy" } })).toThrow(/variant/);
   });
 
   it("remembers whether an area's box was set", () => {
@@ -115,6 +118,17 @@ describe("FusedMapSubscription", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(unsub).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks for filled shapes, and resubscribes when the variant changes", () => {
+    const subscribe = vi.fn().mockResolvedValue(() => undefined);
+    const sub = new FusedMapSubscription(() => undefined);
+    const hass = fakeHass(subscribe);
+    sub.update(hass, true, "filled");
+    expect(subscribe.mock.calls[0]![1]).toEqual({ type: "map_fusion/subscribe", variant: "filled" });
+    sub.update(hass, true, "traced");
+    expect(subscribe).toHaveBeenCalledTimes(2);
+    expect(subscribe.mock.calls[1]![1]).toEqual({ type: "map_fusion/subscribe" });
   });
 
   it("explains a missing integration", async () => {
