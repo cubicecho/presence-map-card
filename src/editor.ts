@@ -6,13 +6,14 @@
  * dialog's theme applies.
  *
  * It edits the raw config (not the normalized one) so saving doesn't write
- * defaults the user never chose. The DOM is rebuilt only when areas or
- * sensors are added or removed; otherwise each form's data is updated in
+ * defaults the user never chose. The DOM is rebuilt only when areas,
+ * sensors or trackers are added or removed; otherwise each form's data is updated in
  * place, so typing doesn't lose focus.
  */
 import { DEFAULT_AREA_SIZE } from "./config.js";
 import { fireEvent } from "./dom.js";
 import { getDriver } from "./sensors/registry.js";
+import { discoverBermudaAreaEntity, trackerLocation, trackerName } from "./trackers/bermuda.js";
 import type { Hass } from "./types.js";
 
 type Raw = Record<string, unknown>;
@@ -40,7 +41,20 @@ const GENERAL_SCHEMA: FormSchemaItem[] = [
   { name: "title", selector: { text: {} } },
   { name: "hide_outside_area", selector: { boolean: {} } },
   { name: "show_fov", selector: { boolean: {} } },
+  { name: "show_legend", selector: { boolean: {} } },
 ];
+
+const TRACKER_SCHEMA: FormSchemaItem[] = [
+  { name: "device", selector: { device: { filter: { integration: "bermuda" } } } },
+  { name: "entity", selector: { entity: { filter: { integration: "bermuda", domain: "sensor" } } } },
+  { name: "name", selector: { text: {} } },
+  { name: "color", selector: { text: {} } },
+];
+
+const TRACKER_LABELS: Record<string, string> = {
+  device: "Bermuda device",
+  entity: "Area sensor (found from device)",
+};
 
 const AREA_SCHEMA: FormSchemaItem[] = [
   { name: "area", required: true, selector: { area: {} } },
@@ -78,6 +92,7 @@ const LABELS: Record<string, string> = {
   title: "Card title",
   hide_outside_area: "Hide targets outside their area",
   show_fov: "Show sensor field of view",
+  show_legend: "Show tracked-device legend",
   area: "Area",
   name: "Label (optional)",
   x: "X position",
@@ -189,10 +204,16 @@ export class PresenceMapCardEditor extends HTMLElement {
     return area.sensors as Raw[];
   }
 
+  private trackers(): Raw[] {
+    if (!Array.isArray(this.config.trackers)) this.config.trackers = [];
+    return this.config.trackers as Raw[];
+  }
+
   private currentKey(): string {
-    return list(this.config.areas)
+    const areas = list(this.config.areas)
       .map((a) => list(a.sensors).length)
       .join(",");
+    return `${areas}|${list(this.config.trackers).length}`;
   }
 
   // -- Rendering ----------------------------------------------------------
@@ -237,6 +258,87 @@ export class PresenceMapCardEditor extends HTMLElement {
     list(this.config.areas).forEach((_, i) => root.append(this.areaSection(i)));
 
     root.append(this.button("Add area", "add-area", () => this.addArea()));
+    root.append(this.trackersSection());
+  }
+
+  private trackersSection(): HTMLElement {
+    const { section, body } = this.section("trackers", "pmc-trackers", "Tracked devices (Bermuda)", () => {
+      const n = list(this.config.trackers).length;
+      return `· ${n} ${n === 1 ? "device" : "devices"}`;
+    });
+    list(this.config.trackers).forEach((_, k) => body.append(this.trackerSection(k)));
+    body.append(this.button("Add Bermuda device", "add-tracker", () => this.addTracker()));
+    return section;
+  }
+
+  private trackerSection(k: number): HTMLElement {
+    const { section, body } = this.section(
+      `tracker-${k}`,
+      "pmc-tracker",
+      `Device ${k + 1}`,
+      () => this.trackerSummary(k),
+      {
+        action: `remove-tracker-${k}`,
+        onRemove: () => {
+          this.trackers().splice(k, 1);
+          this.shiftOpen((key) => {
+            const m = /^tracker-(\d+)$/.exec(key);
+            if (!m) return key;
+            const n = Number(m[1]);
+            if (n === k) return null;
+            return n > k ? `tracker-${n - 1}` : key;
+          });
+          this.commit();
+        },
+      },
+    );
+    body.append(
+      this.form(
+        `tracker-${k}`,
+        TRACKER_SCHEMA,
+        () => this.trackerData(k),
+        (before, after) => this.changeTracker(k, before, after),
+        TRACKER_LABELS,
+      ),
+    );
+    return section;
+  }
+
+  private trackerData(k: number): Raw {
+    const t = list(this.config.trackers)[k] || {};
+    return { device: t.device, entity: t.entity, name: t.name, color: t.color };
+  }
+
+  private changeTracker(k: number, before: Raw, after: Raw): void {
+    const tracker = this.trackers()[k];
+    if (!tracker) return;
+    applyChanges(tracker, before, after);
+    const device = after.device;
+    if (typeof device === "string" && device !== "" && device !== before.device && this.hassObj) {
+      const entity = discoverBermudaAreaEntity(this.hassObj, device);
+      if (entity) tracker.entity = entity;
+    }
+  }
+
+  private trackerSummary(k: number): string {
+    const raw = list(this.config.trackers)[k] || {};
+    const t = {
+      type: "bermuda",
+      device: typeof raw.device === "string" && raw.device ? raw.device : undefined,
+      entity: typeof raw.entity === "string" && raw.entity ? raw.entity : undefined,
+      name: typeof raw.name === "string" && raw.name ? raw.name : undefined,
+    };
+    const name = trackerName(this.hassObj, t);
+    if (!this.hassObj) return `· ${name}`;
+    return `· ${name} · ${trackerLocation(this.hassObj, t).label}`;
+  }
+
+  private addTracker(): void {
+    const trackers = this.trackers();
+    trackers.push({ type: "bermuda" });
+    this.open.add("trackers");
+    this.open.add(`tracker-${trackers.length - 1}`);
+    this.commit();
   }
 
   private areaSection(i: number): HTMLElement {
@@ -245,8 +347,7 @@ export class PresenceMapCardEditor extends HTMLElement {
       "pmc-area",
       `Area ${i + 1}`,
       () => this.areaSummary(i),
-      `remove-area-${i}`,
-      () => {
+      { action: `remove-area-${i}`, onRemove: () => {
         this.areas().splice(i, 1);
         this.shiftOpen((k) => {
           const m = /^(area|sensor)-(\d+)(-\d+)?$/.exec(k);
@@ -256,7 +357,7 @@ export class PresenceMapCardEditor extends HTMLElement {
           return n > i ? `${m[1]}-${n - 1}${m[3] || ""}` : k;
         });
         this.commit();
-      },
+      } },
     );
 
     body.append(
@@ -282,8 +383,7 @@ export class PresenceMapCardEditor extends HTMLElement {
       "pmc-sensor",
       title,
       () => this.sensorSummary(i, j),
-      `remove-sensor-${i}-${j}`,
-      () => {
+      { action: `remove-sensor-${i}-${j}`, onRemove: () => {
         const area = this.areas()[i];
         if (area) this.sensors(area).splice(j, 1);
         this.shiftOpen((k) => {
@@ -294,7 +394,7 @@ export class PresenceMapCardEditor extends HTMLElement {
           return n > j ? `sensor-${i}-${n - 1}` : k;
         });
         this.commit();
-      },
+      } },
     );
     body.append(
       this.form(`sensor-${i}-${j}`, SENSOR_SCHEMA, () => this.sensorData(i, j), (before, after) =>
@@ -304,14 +404,13 @@ export class PresenceMapCardEditor extends HTMLElement {
     return section;
   }
 
-  /** A collapsible section: header with title, live summary and Remove. */
+  /** A collapsible section: header with title, live summary and optional Remove. */
   private section(
     key: string,
     kind: string,
     title: string,
     summary: () => string,
-    removeAction: string,
-    onRemove: () => void,
+    remove?: { action: string; onRemove: () => void },
   ): { section: HTMLDetailsElement; body: HTMLElement } {
     const section = document.createElement("details");
     section.className = `pmc-section ${kind}`;
@@ -333,11 +432,13 @@ export class PresenceMapCardEditor extends HTMLElement {
     this.summaries.push({ el: summaryEl, text: summary });
     header.append(titleEl);
 
-    const remove = this.button("Remove", removeAction, onRemove);
-    remove.classList.add("pmc-remove");
-    // A click inside <summary> would also toggle the section.
-    remove.addEventListener("click", (e) => e.preventDefault());
-    header.append(remove);
+    if (remove) {
+      const button = this.button("Remove", remove.action, remove.onRemove);
+      button.classList.add("pmc-remove");
+      // A click inside <summary> would also toggle the section.
+      button.addEventListener("click", (e) => e.preventDefault());
+      header.append(button);
+    }
 
     const body = document.createElement("div");
     body.className = "pmc-body";
@@ -390,11 +491,12 @@ export class PresenceMapCardEditor extends HTMLElement {
     schema: FormSchemaItem[],
     data: () => Raw,
     onChange: (before: Raw, after: Raw) => void,
+    labels?: Record<string, string>,
   ): HaFormElement {
     const el = document.createElement("ha-form") as HaFormElement;
     el.dataset.form = id;
     el.schema = schema;
-    el.computeLabel = label;
+    el.computeLabel = (item) => (labels && labels[item.name]) || label(item);
     el.addEventListener("value-changed", (event) => {
       event.stopPropagation();
       const detail = (event as CustomEvent<{ value?: Raw }>).detail;
@@ -412,6 +514,7 @@ export class PresenceMapCardEditor extends HTMLElement {
       title: this.config.title,
       hide_outside_area: this.config.hide_outside_area !== false,
       show_fov: this.config.show_fov !== false,
+      show_legend: this.config.show_legend !== false,
     };
   }
 

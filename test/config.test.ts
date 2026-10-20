@@ -10,7 +10,9 @@ describe("normalizeConfig", () => {
       title: undefined,
       hide_outside_area: true,
       show_fov: true,
+      show_legend: true,
       areas: [],
+      trackers: [],
     });
   });
 
@@ -104,5 +106,34 @@ describe("normalizeConfig", () => {
       areas: [{ area: "a", sensors: [{ flip_x: true }, { flip_x: "yes" }] }],
     });
     expect(c.areas[0]!.sensors.map((s) => s.flip_x)).toEqual([true, false]);
+  });
+});
+
+describe("normalizeConfig trackers", () => {
+  it("defaults tracker type to bermuda and keeps fields", () => {
+    const c = normalizeConfig({ type: "x", trackers: [{ device: "d1", name: " Phone ", color: "#f00" }, {}] });
+    expect(c.trackers).toEqual([
+      { type: "bermuda", device: "d1", entity: undefined, name: "Phone", color: "#f00" },
+      { type: "bermuda", device: undefined, entity: undefined, name: undefined, color: undefined },
+    ]);
+  });
+
+  it("rejects unsupported tracker types", () => {
+    expect(() => normalizeConfig({ type: "x", trackers: [{ type: "espresense" }] })).toThrow(
+      /trackers\[0\]\.type "espresense" is not supported/,
+    );
+  });
+
+  it("rejects trackers that are not a list", () => {
+    expect(() => normalizeConfig({ type: "x", trackers: {} })).toThrow(/trackers must be a list/);
+  });
+
+  it("rejects non-object trackers", () => {
+    expect(() => normalizeConfig({ type: "x", trackers: ["sensor.a"] })).toThrow(/trackers\[0\] must be an object/);
+  });
+
+  it("show_legend defaults to true and respects false", () => {
+    expect(normalizeConfig({ type: "x" }).show_legend).toBe(true);
+    expect(normalizeConfig({ type: "x", show_legend: false }).show_legend).toBe(false);
   });
 });

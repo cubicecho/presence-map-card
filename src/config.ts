@@ -47,6 +47,23 @@ export interface AreaConfig {
   sensors: SensorConfig[];
 }
 
+/**
+ * A device tracked at area level (which room, not where in it). Drawn as a
+ * hollow dot beside its area's name and listed in the legend.
+ */
+export interface TrackerConfig {
+  /** Only "bermuda" exists today. */
+  type: string;
+  /** Bermuda device; its `sensor.*_area` entity is found automatically. */
+  device?: string;
+  /** The Area sensor to read, when not using `device` (or to override it). */
+  entity?: string;
+  name?: string;
+  color?: string;
+}
+
+export const TRACKER_TYPES = ["bermuda"];
+
 export interface CardConfig {
   type: string;
   title?: string;
@@ -54,7 +71,10 @@ export interface CardConfig {
   hide_outside_area: boolean;
   /** Draw each sensor's field of view. */
   show_fov: boolean;
+  /** Show the tracker legend under the map. */
+  show_legend: boolean;
   areas: AreaConfig[];
+  trackers: TrackerConfig[];
 }
 
 export const DEFAULT_AREA_SIZE = { width: 4, height: 3 };
@@ -122,16 +142,30 @@ function normalizeArea(raw: unknown, path: string): AreaConfig {
   };
 }
 
+function normalizeTracker(raw: unknown, path: string): TrackerConfig {
+  if (!raw || typeof raw !== "object") throw new Error(`${path} must be an object`);
+  const t = raw as Record<string, unknown>;
+  const type = str(t.type) || "bermuda";
+  if (TRACKER_TYPES.indexOf(type) === -1) throw new Error(`${path}.type "${type}" is not supported`);
+  // Neither device nor entity is allowed: the editor saves while the user
+  // is still picking. Such a tracker just shows as "No sensor".
+  return { type, device: str(t.device), entity: str(t.entity), name: str(t.name), color: str(t.color) };
+}
+
 export function normalizeConfig(raw: unknown): CardConfig {
   if (!raw || typeof raw !== "object") throw new Error("Invalid configuration");
   const c = raw as Record<string, unknown>;
   if (c.areas !== undefined && !Array.isArray(c.areas)) throw new Error("areas must be a list");
+  if (c.trackers !== undefined && !Array.isArray(c.trackers)) throw new Error("trackers must be a list");
   const areas = (c.areas as unknown[] | undefined) || [];
+  const trackers = (c.trackers as unknown[] | undefined) || [];
   return {
     type: String(c.type || ""),
     title: str(c.title),
     hide_outside_area: c.hide_outside_area !== false,
     show_fov: c.show_fov !== false,
+    show_legend: c.show_legend !== false,
     areas: areas.map((a, i) => normalizeArea(a, `areas[${i}]`)),
+    trackers: trackers.map((t, i) => normalizeTracker(t, `trackers[${i}]`)),
   };
 }

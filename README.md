@@ -2,11 +2,14 @@
 
 A Home Assistant Lovelace card that draws your areas as boxes on a floor plan and plots live presence-sensor targets on it.
 
+![Presence map card showing two rooms with LD2450 targets and Bermuda devices](docs/preview.png)
+
 - Pick the Home Assistant **areas** to show and place each one as a box (origin and size).
 - Add **presence sensors** to an area at a position and rotation inside it.
 - Each detected target is drawn as a dot at **area origin + sensor offset + the target's position (rotated to match the sensor)**.
+- Optionally list **tracked devices** from [Bermuda BLE Trilateration](https://github.com/agittins/bermuda). Each one shows as a hollow dot beside the name of the area it is in, with a legend under the map.
 
-Only the **HLK-LD2450** mmWave radar (via ESPHome) is supported for now. Other sensor types can be added later (see [Roadmap](#roadmap)).
+Only the **HLK-LD2450** mmWave radar (via ESPHome) is supported for x/y targets for now. Bermuda is supported at area level (which room, not where in it). Other sensor types can be added later (see [Roadmap](#roadmap)).
 
 ## Installation
 
@@ -83,7 +86,9 @@ areas:
 | `title` | string | none | Card header |
 | `hide_outside_area` | boolean | `true` | Hide targets that fall outside their sensor's area (ghost readings through walls) |
 | `show_fov` | boolean | `true` | Draw each sensor's field-of-view wedge |
+| `show_legend` | boolean | `true` | Show the tracked-device legend under the map (only when `trackers` is set) |
 | `areas` | list | `[]` | Areas to draw (see below) |
+| `trackers` | list | `[]` | Devices tracked at area level, e.g. Bermuda (see [Tracked devices](#tracked-devices-bermuda)) |
 
 ### Area
 
@@ -143,6 +148,34 @@ When a sensor has a `device` and no `targets`, the card looks through the entiti
 
 Values are converted from the entity's `unit_of_measurement` (`mm`, `cm`, `m`, `in`, `ft`; mm if missing). A target reporting `0, 0` is treated as "no target" and hidden.
 
+## Tracked devices (Bermuda)
+
+[Bermuda](https://github.com/agittins/bermuda) works out which area each Bluetooth device (phone, watch, tag) is in. The card can show that alongside the radar targets:
+
+- On the map, each device in an area gets a **hollow dot** (coloured outline, no fill) beside that area's name. The filled dots stay reserved for radar targets, so the two never look alike.
+- Under the map, a **legend** lists every device with its dot, its name and the area it is currently in (or *Away* / *Unavailable*).
+
+Devices in an area that is not on the map only appear in the legend.
+
+```yaml
+trackers:
+  - type: bermuda
+    device: 0123456789abcdef0123456789abcdef   # Bermuda device; its Area sensor is found automatically
+    name: Ben's phone
+    color: "#e91e63"
+  - entity: sensor.keys_tag_area               # or point at the Area sensor directly
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `type` | string | `bermuda` | Tracker source. Only `bermuda` exists today |
+| `device` | string | none | Bermuda device id. Its `sensor.<device>_area` entity is used |
+| `entity` | string | found from `device` | The Bermuda "Area" sensor to read. Overrides discovery |
+| `name` | string | device name | Legend label |
+| `color` | string | palette | Dot colour (any CSS colour) |
+
+The card reads Bermuda's `sensor.<device>_area` entity. It uses the entity's `area_id` attribute to match the device to a map area, and falls back to matching the state (the area name) against your HA areas for older Bermuda versions. In the visual editor, picking the device fills in the Area sensor for you.
+
 ## Calibration tips
 
 1. Measure the room and set the area's `width`/`height` first.
@@ -154,7 +187,7 @@ Values are converted from the entity's `unit_of_measurement` (`mm`, `cm`, `m`, `
 
 ## Roadmap
 
-- More sensor types, e.g. Bermuda BLE trilateration, or anything else that reports an x/y position. Sensor types are pluggable: each implements the `SensorDriver` interface in [`src/sensors/driver.ts`](src/sensors/driver.ts) and is listed in [`src/sensors/registry.ts`](src/sensors/registry.ts). The map code handles placing whatever points a driver returns.
+- More sensor types that report an x/y position. When Bermuda gains real trilateration (x/y), that would become a sensor driver, separate from today's area-level `trackers`. Sensor types are pluggable: each implements the `SensorDriver` interface in [`src/sensors/driver.ts`](src/sensors/driver.ts) and is listed in [`src/sensors/registry.ts`](src/sensors/registry.ts). The map code handles placing whatever points a driver returns.
 - Non-rectangular areas.
 
 ## Development

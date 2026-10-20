@@ -5,7 +5,8 @@ A Home Assistant Lovelace card, distributed through HACS as a **Dashboard/plugin
 - Areas: chosen HA areas, each a rectangle (`x`, `y`, `width`, `height`, in metres, y pointing down the screen).
 - Sensors: children of an area, positioned relative to the area origin, with a `rotation` (clockwise, 0 = facing +y) and `flip_x`.
 - Target map position = area origin + sensor offset + rotated/flipped sensor-frame point.
-- MVP sensor type: HLK-LD2450 via ESPHome. Others (e.g. Bermuda BLE) come later through the driver seam.
+- MVP sensor type: HLK-LD2450 via ESPHome. Others (e.g. Bermuda x/y once it trilaterates) come later through the driver seam.
+- Trackers: card-level list of area-level presence sources (today only Bermuda's `sensor.<device>_area`). Drawn as hollow dots beside the area name, plus a legend. Not positioned within the area, so they are separate from sensor drivers.
 
 ## Layout
 
@@ -22,6 +23,8 @@ src/
     driver.ts        # SensorDriver interface
     registry.ts      # list of drivers; getDriver / isSensorType
     ld2450.ts        # LD2450 driver + entity auto-discovery
+  trackers/
+    bermuda.ts       # Bermuda Area-sensor discovery, current area, display name
 test/                # vitest (jsdom where DOM is needed)
 dist/presence-map-card.js   # committed build output; hacs.json `filename` points here
 ```

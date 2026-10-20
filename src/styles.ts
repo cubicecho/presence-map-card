@@ -28,6 +28,13 @@ svg { display: block; width: 100%; height: auto; max-height: 70vh; }
   transition: transform 0.35s linear, opacity 0.35s;
 }
 .target.hidden { opacity: 0; }
+.tracker { fill: none; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 0 16px 16px; font-size: 0.9em; }
+.legend-item { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.swatch { width: 12px; height: 12px; flex: none; }
+.swatch circle { fill: none; stroke-width: 2; }
+.legend-name { color: var(--primary-text-color); }
+.legend-area { color: var(--secondary-text-color); }
 .empty, .error { padding: 16px; color: var(--secondary-text-color); }
 .error { color: var(--error-color, #db4437); }
 `;

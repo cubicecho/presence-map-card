@@ -10,10 +10,23 @@ import { DEFAULT_AREA_SIZE, normalizeConfig, type CardConfig } from "./config.js
 import { escapeHtml } from "./dom.js";
 import { fovPath, insideArea, mapBounds, sensorOrigin, sensorToMap } from "./geometry.js";
 import { getDriver } from "./sensors/registry.js";
+import { trackerLocation, trackerName } from "./trackers/bermuda.js";
 import { STYLES } from "./styles.js";
 import type { Hass } from "./types.js";
 
 const PALETTE = ["#03a9f4", "#ff9800", "#4caf50", "#e91e63", "#9c27b0", "#009688"];
+/** Kept apart from PALETTE so tracker rings don't read as sensor colours. */
+const TRACKER_PALETTE = ["#e91e63", "#8bc34a", "#ffc107", "#3f51b5", "#ff5722", "#00bcd4", "#795548"];
+
+/** Per-area layout the tracker rings are placed from. */
+interface LabelBox {
+  x: number;
+  y: number;
+  font: number;
+  ring: number;
+  right: number;
+  name: string;
+}
 
 function prettify(id: string): string {
   return id.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -25,6 +38,7 @@ export class PresenceMapCard extends HTMLElement {
   private root: ShadowRoot;
   private lastHtml = "";
   private error: string | null = null;
+  private labels: LabelBox[] = [];
 
   constructor() {
     super();
@@ -84,7 +98,10 @@ export class PresenceMapCard extends HTMLElement {
       this.lastHtml = html;
       this.root.innerHTML = html;
     }
-    if (!this.error) this.updateTargets(this.config);
+    if (!this.error) {
+      this.updateTargets(this.config);
+      this.updateTrackers(this.config);
+    }
   }
 
   private areaName(id: string, override?: string): string {
@@ -108,6 +125,7 @@ export class PresenceMapCard extends HTMLElement {
     const dotR = Math.min(0.25, Math.max(0.08, span * 0.012));
     const f = (n: number) => n.toFixed(3);
 
+    this.labels = [];
     const defs: string[] = [];
     const areas: string[] = [];
     const overlays: string[] = [];
@@ -122,8 +140,17 @@ export class PresenceMapCard extends HTMLElement {
       areas.push(
         `<g class="area" data-area="${escapeHtml(area.area)}"><title>${escapeHtml(name)}</title>` +
           `<rect class="area-box" x="${f(area.x)}" y="${f(area.y)}" width="${f(area.width)}" height="${f(area.height)}"/>` +
-          `<text class="area-label" x="${f(area.x + font * 0.5)}" y="${f(area.y + font * 1.3)}" font-size="${f(font)}">${escapeHtml(name)}</text></g>`,
+          `<text class="area-label" data-label="${ai}" x="${f(area.x + font * 0.5)}" y="${f(area.y + font * 1.3)}" font-size="${f(font)}">${escapeHtml(name)}</text>` +
+          `<g class="trackers" data-trackers="${ai}"></g></g>`,
       );
+      this.labels.push({
+        x: area.x + font * 0.5,
+        y: area.y + font * 1.3,
+        font,
+        ring: dotR * 0.75,
+        right: area.x + area.width - font * 0.3,
+        name,
+      });
 
       area.sensors.forEach((sensor, si) => {
         const driver = getDriver(sensor.type);
@@ -151,8 +178,83 @@ export class PresenceMapCard extends HTMLElement {
       `<style>${STYLES}</style><ha-card>${header}<div class="map">` +
       `<svg viewBox="${viewBox}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Presence map">` +
       `<defs>${defs.join("")}</defs>${areas.join("")}${overlays.join("")}<g class="targets">${dots.join("")}</g>` +
-      `</svg></div></ha-card>`
+      `</svg></div>${this.legend(config)}</ha-card>`
     );
+  }
+
+  private trackerColor(config: CardConfig, k: number): string {
+    const t = config.trackers[k];
+    return (t && t.color) || TRACKER_PALETTE[k % TRACKER_PALETTE.length]!;
+  }
+
+  private legend(config: CardConfig): string {
+    if (!config.show_legend || !config.trackers.length) return "";
+    const items = config.trackers.map((t, k) => {
+      const color = escapeHtml(this.trackerColor(config, k));
+      return (
+        `<div class="legend-item" data-tracker="${k}">` +
+        `<svg class="swatch" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" stroke="${color}"/></svg>` +
+        `<span class="legend-name">${escapeHtml(trackerName(this.hassObj, t))}</span>` +
+        `<span class="legend-area" data-tracker-area="${k}"></span></div>`
+      );
+    });
+    return `<div class="legend">${items.join("")}</div>`;
+  }
+
+  /** Width of an area's label in map units; estimated where SVG can't measure. */
+  private labelWidth(ai: number, box: LabelBox): number {
+    const el = this.root.querySelector<SVGTextElement>(`[data-label="${ai}"]`);
+    try {
+      const w = el && typeof el.getComputedTextLength === "function" ? el.getComputedTextLength() : 0;
+      if (w > 0) return w;
+    } catch {
+      // Not laid out yet (hidden card); fall back to the estimate.
+    }
+    return box.name.length * box.font * 0.55;
+  }
+
+  /** Place a hollow ring beside each area's name for every tracker in it. */
+  private updateTrackers(config: CardConfig): void {
+    const hass = this.hassObj;
+    if (!hass || !config.trackers.length) return;
+    const locations = config.trackers.map((t) => trackerLocation(hass, t));
+
+    locations.forEach((loc, k) => {
+      const el = this.root.querySelector(`[data-tracker-area="${k}"]`);
+      if (el && el.textContent !== loc.label) el.textContent = loc.label;
+    });
+
+    const f = (n: number) => n.toFixed(3);
+    config.areas.forEach((area, ai) => {
+      const group = this.root.querySelector(`[data-trackers="${ai}"]`);
+      const box = this.labels[ai];
+      if (!group || !box) return;
+      const inside: number[] = [];
+      locations.forEach((loc, k) => {
+        if (loc.areaId === area.area) inside.push(k);
+      });
+
+      const step = box.ring * 3.2;
+      let x = box.x + this.labelWidth(ai, box) + box.font * 0.4 + box.ring;
+      let y = box.y - box.font * 0.35;
+      const rings = inside.map((k) => {
+        if (x + box.ring > box.right && x > box.x + box.ring * 2) {
+          // Out of room on this line: wrap below the label.
+          x = box.x + box.ring;
+          y += box.font * 1.1;
+        }
+        const name = escapeHtml(trackerName(hass, config.trackers[k]!));
+        const ring =
+          `<circle class="tracker" data-tracker-ring="${k}" cx="${f(x)}" cy="${f(y)}" r="${f(box.ring)}" stroke="${escapeHtml(this.trackerColor(config, k))}"><title>${name}</title></circle>`;
+        x += step;
+        return ring;
+      });
+      const html = rings.join("");
+      if (group.getAttribute("data-html") !== html) {
+        group.setAttribute("data-html", html);
+        group.innerHTML = html;
+      }
+    });
   }
 
   private updateTargets(config: CardConfig): void {

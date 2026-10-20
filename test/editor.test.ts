@@ -29,7 +29,10 @@ const hass: Hass = {
     "sensor.radar_target_1_y": { entity_id: "sensor.radar_target_1_y", device_id: "dev1" },
     "sensor.radar_target_2_x": { entity_id: "sensor.radar_target_2_x", device_id: "dev1" },
     "sensor.radar_target_2_y": { entity_id: "sensor.radar_target_2_y", device_id: "dev1" },
+    "sensor.phone_area_last_seen": { entity_id: "sensor.phone_area_last_seen", device_id: "phone" },
+    "sensor.phone_area": { entity_id: "sensor.phone_area", device_id: "phone" },
   },
+  devices: { phone: { id: "phone", name: "Pixel 9" } },
 };
 
 function makeEditor(config: Record<string, unknown>) {
@@ -190,5 +193,57 @@ describe("collapsible sections", () => {
     const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
     btn.dispatchEvent(ev);
     expect(ev.defaultPrevented).toBe(true);
+  });
+});
+
+describe("tracked devices", () => {
+  const section = (editor: HTMLElement, key: string) =>
+    editor.querySelector<HTMLDetailsElement>(`details[data-section="${key}"]`)!;
+
+  it("shows the trackers section with a count and no Remove button", () => {
+    const { editor } = makeEditor({ type: "x", trackers: [{ type: "bermuda" }, { type: "bermuda" }] });
+    const s = section(editor, "trackers");
+    expect(s.querySelector(".pmc-summary")!.textContent).toBe("· 2 devices");
+    expect(s.querySelector(":scope > summary button")).toBeNull();
+    expect(editor.querySelectorAll(".pmc-tracker").length).toBe(2);
+  });
+
+  it("adds a tracker and opens it", () => {
+    const { editor, last } = makeEditor({ type: "x" });
+    click(editor, "add-tracker");
+    expect(last().trackers).toEqual([{ type: "bermuda" }]);
+    expect(section(editor, "trackers").open).toBe(true);
+    expect(section(editor, "tracker-0").open).toBe(true);
+    expect(form(editor, "tracker-0")).toBeTruthy();
+  });
+
+  it("removes a tracker and re-keys open state", () => {
+    const { editor, last } = makeEditor({
+      type: "x",
+      trackers: [{ type: "bermuda", name: "A" }, { type: "bermuda", name: "B" }],
+    });
+    const b = section(editor, "tracker-1");
+    b.open = true;
+    b.dispatchEvent(new Event("toggle"));
+    click(editor, "remove-tracker-0");
+    expect(last().trackers).toEqual([{ type: "bermuda", name: "B" }]);
+    expect(section(editor, "tracker-0").open).toBe(true);
+  });
+
+  it("finds the Area sensor when a device is picked", () => {
+    const { editor, last } = makeEditor({ type: "x", trackers: [{ type: "bermuda" }] });
+    change(form(editor, "tracker-0"), { device: "phone" });
+    expect(last().trackers).toEqual([{ type: "bermuda", device: "phone", entity: "sensor.phone_area" }]);
+    expect(form(editor, "tracker-0").data).toMatchObject({ entity: "sensor.phone_area" });
+    expect(section(editor, "tracker-0").querySelector(".pmc-summary")!.textContent).toBe(
+      "· Pixel 9 · Unavailable",
+    );
+  });
+
+  it("writes show_legend only when toggled", () => {
+    const { editor, last } = makeEditor({ type: "x" });
+    expect(form(editor, "general").data).toMatchObject({ show_legend: true });
+    change(form(editor, "general"), { show_legend: false });
+    expect(last()).toEqual({ type: "x", show_legend: false });
   });
 });

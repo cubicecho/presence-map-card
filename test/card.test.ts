@@ -122,3 +122,68 @@ describe("PresenceMapCard", () => {
     });
   });
 });
+
+describe("Bermuda trackers", () => {
+  function trackerHass(): Hass {
+    const hass = makeHass(["0", "0"]);
+    hass.areas!.kitchen = { area_id: "kitchen", name: "Kitchen" };
+    hass.devices = { phone: { id: "phone", name: "Ben's phone" } };
+    hass.entities!["sensor.bens_phone_area"] = { entity_id: "sensor.bens_phone_area", device_id: "phone" };
+    hass.entities!["sensor.bens_phone_area_last_seen"] = { entity_id: "sensor.bens_phone_area_last_seen", device_id: "phone" };
+    hass.states["sensor.bens_phone_area"] = {
+      ...state("sensor.bens_phone_area", "Living Room"),
+      attributes: { area_id: "living_room" },
+    };
+    hass.states["sensor.watch_area"] = {
+      ...state("sensor.watch_area", "Kitchen"),
+      attributes: { friendly_name: "Watch Area" },
+    };
+    return hass;
+  }
+
+  const config = {
+    ...CONFIG,
+    areas: [
+      { area: "living_room", x: 0, y: 0, width: 5, height: 4 },
+      { area: "kitchen", x: 5, y: 0, width: 3, height: 4 },
+    ],
+    trackers: [{ device: "phone" }, { entity: "sensor.watch_area", color: "#123456" }, { entity: "sensor.gone_area" }],
+  };
+
+  it("puts a hollow ring beside the area each device is in", () => {
+    const card = mount(config, trackerHass());
+    const root = card.shadowRoot!;
+    const living = root.querySelectorAll('[data-trackers="0"] .tracker');
+    const kitchen = root.querySelectorAll('[data-trackers="1"] .tracker');
+    expect(living).toHaveLength(1);
+    expect(living[0]!.getAttribute("data-tracker-ring")).toBe("0");
+    expect(kitchen).toHaveLength(1);
+    expect(kitchen[0]!.getAttribute("stroke")).toBe("#123456");
+  });
+
+  it("lists every device with its area in the legend", () => {
+    const card = mount(config, trackerHass());
+    const items = Array.from(card.shadowRoot!.querySelectorAll(".legend-item")).map((el) => el.textContent);
+    expect(items).toEqual(["Ben's phoneLiving Room", "WatchKitchen", "sensor.gone_areaUnavailable"]);
+  });
+
+  it("moves rings when a device changes area", () => {
+    const card = mount(config, trackerHass());
+    const hass = trackerHass();
+    hass.states["sensor.bens_phone_area"] = {
+      ...state("sensor.bens_phone_area", "Kitchen"),
+      attributes: { area_id: "kitchen" },
+    };
+    card.hass = hass;
+    const root = card.shadowRoot!;
+    expect(root.querySelectorAll('[data-trackers="0"] .tracker')).toHaveLength(0);
+    expect(root.querySelectorAll('[data-trackers="1"] .tracker')).toHaveLength(2);
+    expect(root.querySelector('[data-tracker-area="0"]')!.textContent).toBe("Kitchen");
+  });
+
+  it("can hide the legend", () => {
+    const card = mount({ ...config, show_legend: false }, trackerHass());
+    expect(card.shadowRoot!.querySelector(".legend")).toBeNull();
+    expect(card.shadowRoot!.querySelectorAll(".tracker")).toHaveLength(2);
+  });
+});
