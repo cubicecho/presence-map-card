@@ -1,7 +1,7 @@
 {
   "name": "presence-map-card",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Home Assistant Lovelace card that draws areas as boxes and plots presence-sensor targets on them",
   "type": "module",
   "scripts": {

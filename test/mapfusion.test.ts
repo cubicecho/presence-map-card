@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { normalizeConfig } from "../src/config.js";
 import { insidePolygons, ringsPath } from "../src/geometry.js";
-import { FusedMapSubscription, pickFrame, resolveAreas } from "../src/mapfusion.js";
+import { FusedMapSubscription, RETRY_MAX_MS, RETRY_MIN_MS, pickFrame, resolveAreas } from "../src/mapfusion.js";
 import type { Hass } from "../src/types.js";
 
 import { fusedDoc } from "./fused-doc.js";
@@ -137,5 +137,59 @@ describe("FusedMapSubscription", () => {
     new FusedMapSubscription(onChange).update(fakeHass(subscribe), true);
     await new Promise((r) => setTimeout(r, 0));
     expect(onChange).toHaveBeenCalledWith(null, "Map Fusion isn't installed.");
+  });
+
+  describe("retrying after a failure", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("retries with backoff and recovers once Map Fusion answers", async () => {
+      const subscribe = vi
+        .fn()
+        .mockRejectedValueOnce({ code: "not_loaded" })
+        .mockRejectedValueOnce({ code: "not_loaded" })
+        .mockResolvedValue(() => undefined);
+      const onChange = vi.fn();
+      new FusedMapSubscription(onChange).update(fakeHass(subscribe), true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(subscribe).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenLastCalledWith(null, expect.stringContaining("isn't set up"));
+
+      await vi.advanceTimersByTimeAsync(RETRY_MIN_MS - 1);
+      expect(subscribe).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(subscribe).toHaveBeenCalledTimes(2);
+
+      // Second failure waits twice as long.
+      await vi.advanceTimersByTimeAsync(RETRY_MIN_MS * 2 - 1);
+      expect(subscribe).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(subscribe).toHaveBeenCalledTimes(3);
+
+      subscribe.mock.calls[2]![0](fusedDoc());
+      expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ version: 1 }), null);
+      await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 2);
+      expect(subscribe).toHaveBeenCalledTimes(3);
+    });
+
+    it("caps the wait between retries", async () => {
+      const subscribe = vi.fn().mockRejectedValue({ code: "unknown_command" });
+      new FusedMapSubscription(() => undefined).update(fakeHass(subscribe), true);
+      await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 20);
+      const calls = subscribe.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(RETRY_MAX_MS);
+      expect(subscribe.mock.calls.length).toBe(calls + 1);
+    });
+
+    it("stops retrying when stopped or turned off", async () => {
+      const subscribe = vi.fn().mockRejectedValue({ code: "not_loaded" });
+      const sub = new FusedMapSubscription(() => undefined);
+      const hass = fakeHass(subscribe);
+      sub.update(hass, true);
+      await vi.advanceTimersByTimeAsync(0);
+      sub.update(hass, false);
+      await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 4);
+      expect(subscribe).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -338,6 +338,29 @@ describe("Map Fusion in the editor", () => {
     expect(editor.querySelector('[data-status="place-area-0"]')!.textContent).toBe("Saved to Map Fusion (Map 1).");
   });
 
+  it("reports a save on the right area after an area above it is removed", async () => {
+    let finish: (v: unknown) => void = () => undefined;
+    const callWS = (msg: Record<string, unknown>) =>
+      msg.type === "map_fusion/area/set" ? new Promise((r) => (finish = r)) : Promise.resolve(fusedDoc());
+    const { editor } = editorWith(
+      {
+        type: "custom:presence-map-card",
+        map_fusion: true,
+        areas: [{ area: "office", x: 0, width: 2 }, { area: "living", x: 9, width: 2 }],
+      },
+      fusionHass(callWS),
+    );
+    await settle();
+    button(editor, "place-area-1").click();
+    expect(editor.querySelector('[data-status="place-area-1"]')!.textContent).toBe("Saving…");
+    button(editor, "remove-area-0").click();
+    finish({});
+    await settle();
+    // "living" is now the first area; its message moved with it.
+    expect(editor.querySelector('[data-status="place-area-0"]')!.textContent).toBe("Saved to Map Fusion (Map 1).");
+    expect(editor.querySelector('[data-status="place-area-1"]')).toBeNull();
+  });
+
   it("hides placing from non-admins", async () => {
     const { editor } = editorWith(
       { type: "custom:presence-map-card", map_fusion: true, areas: [{ area: "living" }] },

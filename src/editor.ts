@@ -209,7 +209,8 @@ export class PresenceMapCardEditor extends HTMLElement {
   private fused: FusedDoc | null = null;
   private fusedFetch: Promise<void> | null = null;
   /** Result of the last "Place on Map Fusion map", by area index. */
-  private placeStatus: Record<number, string> = {};
+  /** Save messages under "Place on Map Fusion map", keyed by area id. */
+  private placeStatus: Record<string, string> = {};
 
   setConfig(config: Raw): void {
     this.config = clone(config || {});
@@ -346,15 +347,17 @@ export class PresenceMapCardEditor extends HTMLElement {
       width: Number(a.width) || DEFAULT_AREA_SIZE.width,
       height: Number(a.height) || DEFAULT_AREA_SIZE.height,
     };
-    this.placeStatus[i] = "Saving…";
+    const areaId = a.area;
+    this.placeStatus[areaId] = "Saving…";
     this.update();
     placeArea(hass, frame.frame_id, a.area, rect)
       .then(() => {
-        this.placeStatus[i] = `Saved to Map Fusion (${frame.name}).`;
+        this.placeStatus[areaId] = `Saved to Map Fusion (${frame.name}).`;
         this.ensureFused(true);
+        this.update();
       })
       .catch((err: { message?: string }) => {
-        this.placeStatus[i] = `Couldn't save: ${(err && err.message) || String(err)}`;
+        this.placeStatus[areaId] = `Couldn't save: ${(err && err.message) || String(err)}`;
         this.update();
       });
   }
@@ -372,7 +375,7 @@ export class PresenceMapCardEditor extends HTMLElement {
       const show = this.mapFusionOn() && admin && !!this.mapFusionFrame() && !!a.area && (!fused || fused.origin === "manual");
       button.hidden = !show;
       button.textContent = fused ? "Update Map Fusion shape from this box" : "Place on Map Fusion map";
-      const text = this.placeStatus[i] || "";
+      const text = (typeof a.area === "string" && this.placeStatus[a.area]) || "";
       if (status.textContent !== text) status.textContent = text;
     });
     return [button, status];
@@ -382,7 +385,6 @@ export class PresenceMapCardEditor extends HTMLElement {
     this.forms = [];
     this.summaries = [];
     this.refreshers = [];
-    this.placeStatus = {};
     this.innerHTML = "";
 
     const style = document.createElement("style");

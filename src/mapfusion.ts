@@ -174,15 +174,24 @@ function errorText(err: unknown): string {
   return `Map Fusion: ${(e && e.message) || String(err)}`;
 }
 
+/** First retry after a failed subscribe; doubles up to RETRY_MAX_MS. */
+export const RETRY_MIN_MS = 10_000;
+export const RETRY_MAX_MS = 5 * 60_000;
+
 /**
  * Keeps one `map_fusion/subscribe` open while the card wants it. Safe to
  * call `update` on every hass change: it only resubscribes when the
  * connection changes or Map Fusion is turned on.
+ *
+ * A failed subscribe (Map Fusion not loaded yet, restarting, not installed)
+ * is retried with backoff, so the card recovers without a page reload.
  */
 export class FusedMapSubscription {
   private unsubscribe: Promise<(() => void) | void> | null = null;
   private connection: HassConnection | null = null;
   private variant = "traced";
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryDelay = RETRY_MIN_MS;
 
   constructor(private readonly onChange: (doc: FusedDoc | null, error: string | null) => void) {}
 
@@ -193,17 +202,39 @@ export class FusedMapSubscription {
     this.variant = variant;
     if (!connection) return;
     this.connection = connection;
+    this.subscribe(connection);
+  }
+
+  private subscribe(connection: HassConnection): void {
     // Older Map Fusion versions don't know `variant`; only send it when needed.
     const message: Record<string, unknown> = { type: "map_fusion/subscribe" };
-    if (variant !== "traced") message.variant = variant;
+    if (this.variant !== "traced") message.variant = this.variant;
     this.unsubscribe = connection
-      .subscribeMessage<FusedDoc | null>((doc) => this.onChange(doc, null), message)
+      .subscribeMessage<FusedDoc | null>((doc) => {
+        this.retryDelay = RETRY_MIN_MS;
+        this.onChange(doc, null);
+      }, message)
       .catch((err: unknown) => {
-        if (this.connection === connection) this.onChange(null, errorText(err));
+        if (this.connection !== connection) return;
+        this.unsubscribe = null;
+        this.onChange(null, errorText(err));
+        this.scheduleRetry(connection);
       });
   }
 
+  private scheduleRetry(connection: HassConnection): void {
+    const delay = this.retryDelay;
+    this.retryDelay = Math.min(RETRY_MAX_MS, delay * 2);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.connection === connection) this.subscribe(connection);
+    }, delay);
+  }
+
   stop(): void {
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.retryDelay = RETRY_MIN_MS;
     const pending = this.unsubscribe;
     this.unsubscribe = null;
     this.connection = null;
