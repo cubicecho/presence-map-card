@@ -1,0 +1,6 @@
+{
+  "name": "Presence Map Card",
+  "filename": "presence-map-card.js",
+  "render_readme": true,
+  "homeassistant": "2024.7.0"
+}
