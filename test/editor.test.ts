@@ -138,3 +138,57 @@ describe("PresenceMapCardEditor", () => {
     expect(editor.querySelectorAll(".pmc-area").length).toBe(1);
   });
 });
+
+describe("collapsible sections", () => {
+  const section = (editor: HTMLElement, key: string) =>
+    editor.querySelector<HTMLDetailsElement>(`details[data-section="${key}"]`)!;
+
+  it("starts existing sections collapsed with a summary", () => {
+    const { editor } = makeEditor({
+      type: "x",
+      areas: [{ area: "living", x: 1, y: 2, width: 5, height: 4, sensors: [{ type: "ld2450", x: 2.5, rotation: 90, flip_x: true }] }],
+    });
+    expect(section(editor, "area-0").open).toBe(false);
+    expect(section(editor, "sensor-0-0").open).toBe(false);
+    expect(section(editor, "area-0").querySelector(".pmc-summary")!.textContent).toBe(
+      "· Living room · 5 × 4 m at (1, 2)",
+    );
+    expect(section(editor, "sensor-0-0").querySelector(".pmc-summary")!.textContent).toBe(
+      "· (2.5, 0) · 90° · mirrored",
+    );
+  });
+
+  it("opens newly added areas and sensors", () => {
+    const { editor } = makeEditor({ type: "x", areas: [{ area: "living" }] });
+    click(editor, "add-sensor-0");
+    expect(section(editor, "area-0").open).toBe(true);
+    expect(section(editor, "sensor-0-0").open).toBe(true);
+    click(editor, "add-area");
+    expect(section(editor, "area-1").open).toBe(true);
+  });
+
+  it("keeps open state across rebuilds and removals", () => {
+    const { editor } = makeEditor({ type: "x", areas: [{ area: "living" }, { area: "kitchen" }] });
+    const kitchen = section(editor, "area-1");
+    kitchen.open = true;
+    kitchen.dispatchEvent(new Event("toggle"));
+    click(editor, "remove-area-0");
+    expect(section(editor, "area-0").open).toBe(true);
+  });
+
+  it("updates the summary without rebuilding", () => {
+    const { editor } = makeEditor({ type: "x", areas: [{ area: "living" }] });
+    const before = section(editor, "area-0");
+    change(form(editor, "area-0"), { width: 6 });
+    expect(section(editor, "area-0")).toBe(before);
+    expect(before.querySelector(".pmc-summary")!.textContent).toContain("6 × 3 m");
+  });
+
+  it("Remove does not toggle the section", () => {
+    const { editor } = makeEditor({ type: "x", areas: [{ area: "living", sensors: [{ type: "ld2450" }] }] });
+    const btn = editor.querySelector<HTMLButtonElement>('button[data-action="remove-sensor-0-0"]')!;
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+    btn.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+  });
+});

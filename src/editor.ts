@@ -100,12 +100,23 @@ function label(item: FormSchemaItem): string {
 
 const STYLES = `
 .pmc-editor { display: flex; flex-direction: column; gap: 16px; }
-.pmc-section { border: 1px solid var(--divider-color, #e0e0e0); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.pmc-section { border: 1px solid var(--divider-color, #e0e0e0); border-radius: 8px; }
 .pmc-sensor { margin-left: 8px; background: var(--secondary-background-color, transparent); }
-.pmc-header { display: flex; align-items: center; justify-content: space-between; font-weight: 500; }
+.pmc-body { display: flex; flex-direction: column; gap: 12px; padding: 0 12px 12px; }
+.pmc-header { display: flex; align-items: center; gap: 8px; padding: 12px; cursor: pointer; list-style: none; font-weight: 500; }
+.pmc-header::-webkit-details-marker { display: none; }
+.pmc-header::before { content: "\\25B8"; display: inline-block; transition: transform 0.15s; color: var(--secondary-text-color); }
+details[open] > .pmc-header::before { transform: rotate(90deg); }
+.pmc-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pmc-summary { font-weight: 400; color: var(--secondary-text-color); }
 .pmc-button { cursor: pointer; border: 1px solid var(--primary-color, #03a9f4); color: var(--primary-color, #03a9f4); background: transparent; border-radius: 6px; padding: 6px 12px; font: inherit; }
 .pmc-button.pmc-remove { border-color: var(--error-color, #db4437); color: var(--error-color, #db4437); padding: 2px 8px; }
 `;
+
+/** Short number for summaries: 2.5, 4, 0.25. */
+function fmt(n: number): string {
+  return String(Math.round(n * 100) / 100);
+}
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -143,6 +154,10 @@ export class PresenceMapCardEditor extends HTMLElement {
   private hassObj?: Hass;
   private structureKey: string | null = null;
   private forms: BoundForm[] = [];
+  /** Header summaries, refreshed in place as fields change. */
+  private summaries: Array<{ el: HTMLElement; text: () => string }> = [];
+  /** Which sections are expanded: "area-i" and "sensor-i-j". */
+  private open = new Set<string>();
 
   setConfig(config: Raw): void {
     this.config = clone(config || {});
@@ -197,10 +212,12 @@ export class PresenceMapCardEditor extends HTMLElement {
       f.el.hass = this.hassObj;
       f.el.data = f.data();
     }
+    for (const s of this.summaries) s.el.textContent = s.text();
   }
 
   private build(): void {
     this.forms = [];
+    this.summaries = [];
     this.innerHTML = "";
 
     const style = document.createElement("style");
@@ -223,14 +240,26 @@ export class PresenceMapCardEditor extends HTMLElement {
   }
 
   private areaSection(i: number): HTMLElement {
-    const section = document.createElement("div");
-    section.className = "pmc-section pmc-area";
-    section.append(this.header(`Area ${i + 1}`, `remove-area-${i}`, () => {
-      this.areas().splice(i, 1);
-      this.commit();
-    }));
+    const { section, body } = this.section(
+      `area-${i}`,
+      "pmc-area",
+      `Area ${i + 1}`,
+      () => this.areaSummary(i),
+      `remove-area-${i}`,
+      () => {
+        this.areas().splice(i, 1);
+        this.shiftOpen((k) => {
+          const m = /^(area|sensor)-(\d+)(-\d+)?$/.exec(k);
+          if (!m) return k;
+          const n = Number(m[2]);
+          if (n === i) return null;
+          return n > i ? `${m[1]}-${n - 1}${m[3] || ""}` : k;
+        });
+        this.commit();
+      },
+    );
 
-    section.append(
+    body.append(
       this.form(`area-${i}`, AREA_SCHEMA, () => this.areaData(i), (before, after) => {
         const area = this.areas()[i];
         if (area) applyChanges(area, before, after);
@@ -238,24 +267,36 @@ export class PresenceMapCardEditor extends HTMLElement {
     );
 
     const area = list(this.config.areas)[i];
-    list(area && area.sensors).forEach((_, j) => section.append(this.sensorSection(i, j)));
+    list(area && area.sensors).forEach((_, j) => body.append(this.sensorSection(i, j)));
 
-    section.append(this.button("Add LD2450 sensor", `add-sensor-${i}`, () => this.addSensor(i)));
+    body.append(this.button("Add LD2450 sensor", `add-sensor-${i}`, () => this.addSensor(i)));
     return section;
   }
 
   private sensorSection(i: number, j: number): HTMLElement {
-    const section = document.createElement("div");
-    section.className = "pmc-section pmc-sensor";
     const sensor = this.sensorAt(i, j);
     const driver = getDriver(String((sensor && sensor.type) || "ld2450"));
     const title = `${driver ? driver.label : "Sensor"} ${j + 1}`;
-    section.append(this.header(title, `remove-sensor-${i}-${j}`, () => {
-      const area = this.areas()[i];
-      if (area) this.sensors(area).splice(j, 1);
-      this.commit();
-    }));
-    section.append(
+    const { section, body } = this.section(
+      `sensor-${i}-${j}`,
+      "pmc-sensor",
+      title,
+      () => this.sensorSummary(i, j),
+      `remove-sensor-${i}-${j}`,
+      () => {
+        const area = this.areas()[i];
+        if (area) this.sensors(area).splice(j, 1);
+        this.shiftOpen((k) => {
+          const m = /^sensor-(\d+)-(\d+)$/.exec(k);
+          if (!m || Number(m[1]) !== i) return k;
+          const n = Number(m[2]);
+          if (n === j) return null;
+          return n > j ? `sensor-${i}-${n - 1}` : k;
+        });
+        this.commit();
+      },
+    );
+    body.append(
       this.form(`sensor-${i}-${j}`, SENSOR_SCHEMA, () => this.sensorData(i, j), (before, after) =>
         this.changeSensor(i, j, before, after),
       ),
@@ -263,16 +304,75 @@ export class PresenceMapCardEditor extends HTMLElement {
     return section;
   }
 
-  private header(text: string, action: string, onRemove: () => void): HTMLElement {
-    const header = document.createElement("div");
+  /** A collapsible section: header with title, live summary and Remove. */
+  private section(
+    key: string,
+    kind: string,
+    title: string,
+    summary: () => string,
+    removeAction: string,
+    onRemove: () => void,
+  ): { section: HTMLDetailsElement; body: HTMLElement } {
+    const section = document.createElement("details");
+    section.className = `pmc-section ${kind}`;
+    section.dataset.section = key;
+    section.open = this.open.has(key);
+    section.addEventListener("toggle", () => {
+      if (section.open) this.open.add(key);
+      else this.open.delete(key);
+    });
+
+    const header = document.createElement("summary");
     header.className = "pmc-header";
-    const span = document.createElement("span");
-    span.textContent = text;
-    header.append(span);
-    const remove = this.button("Remove", action, onRemove);
+    const titleEl = document.createElement("span");
+    titleEl.className = "pmc-title";
+    titleEl.textContent = title;
+    const summaryEl = document.createElement("span");
+    summaryEl.className = "pmc-summary";
+    titleEl.append(" ", summaryEl);
+    this.summaries.push({ el: summaryEl, text: summary });
+    header.append(titleEl);
+
+    const remove = this.button("Remove", removeAction, onRemove);
     remove.classList.add("pmc-remove");
+    // A click inside <summary> would also toggle the section.
+    remove.addEventListener("click", (e) => e.preventDefault());
     header.append(remove);
-    return header;
+
+    const body = document.createElement("div");
+    body.className = "pmc-body";
+    section.append(header, body);
+    return { section, body };
+  }
+
+  /** Re-key open sections after a removal; null drops the key. */
+  private shiftOpen(map: (key: string) => string | null): void {
+    const next = new Set<string>();
+    this.open.forEach((k) => {
+      const m = map(k);
+      if (m !== null) next.add(m);
+    });
+    this.open = next;
+  }
+
+  private areaSummary(i: number): string {
+    const a = list(this.config.areas)[i] || {};
+    const id = typeof a.area === "string" ? a.area : "";
+    const ha = id && this.hassObj && this.hassObj.areas ? this.hassObj.areas[id] : undefined;
+    const name = (typeof a.name === "string" && a.name) || (ha && ha.name) || id || "No area picked";
+    const w = Number(a.width) || DEFAULT_AREA_SIZE.width;
+    const h = Number(a.height) || DEFAULT_AREA_SIZE.height;
+    return `· ${name} · ${fmt(w)} × ${fmt(h)} m at (${fmt(Number(a.x) || 0)}, ${fmt(Number(a.y) || 0)})`;
+  }
+
+  private sensorSummary(i: number, j: number): string {
+    const s = this.sensorAt(i, j) || {};
+    const parts: string[] = [];
+    if (typeof s.name === "string" && s.name) parts.push(s.name);
+    parts.push(`(${fmt(Number(s.x) || 0)}, ${fmt(Number(s.y) || 0)})`);
+    parts.push(`${fmt(Number(s.rotation) || 0)}°`);
+    if (s.flip_x === true) parts.push("mirrored");
+    return `· ${parts.join(" · ")}`;
   }
 
   private button(text: string, action: string, onClick: () => void): HTMLButtonElement {
@@ -412,6 +512,7 @@ export class PresenceMapCardEditor extends HTMLElement {
       height: DEFAULT_AREA_SIZE.height,
       sensors: [],
     });
+    this.open.add(`area-${areas.length - 1}`);
     this.commit();
   }
 
@@ -420,7 +521,10 @@ export class PresenceMapCardEditor extends HTMLElement {
     if (!area) return;
     const width = Number(area.width) || DEFAULT_AREA_SIZE.width;
     // Default: middle of the top wall, facing into the room.
-    this.sensors(area).push({ type: "ld2450", x: width / 2, y: 0, rotation: 0 });
+    const sensors = this.sensors(area);
+    sensors.push({ type: "ld2450", x: width / 2, y: 0, rotation: 0 });
+    this.open.add(`area-${i}`);
+    this.open.add(`sensor-${i}-${sensors.length - 1}`);
     this.commit();
   }
 
